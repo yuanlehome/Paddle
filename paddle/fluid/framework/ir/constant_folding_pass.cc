@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License. */
 
 #include "paddle/fluid/framework/ir/constant_folding_pass.h"
+#include <memory>
 #include <string>
 #include <vector>
 #include "glog/logging.h"
@@ -21,6 +22,7 @@ limitations under the License. */
 #include "paddle/fluid/framework/ir/pass.h"
 #include "paddle/fluid/framework/op_registry.h"
 #include "paddle/fluid/framework/op_version_registry.h"
+#include "paddle/fluid/framework/scope.h"
 #include "paddle/fluid/platform/enforce.h"
 
 #include "paddle/fluid/framework/convert_utils.h"
@@ -100,7 +102,8 @@ void ConstantFoldingPass::ApplyImpl(ir::Graph *graph) const {
       }
     }
 
-    framework::Scope *local_scope = new framework::Scope();
+    auto local_scope =
+        std::unique_ptr<framework::Scope>(new framework::Scope());
     std::unordered_set<const paddle::framework::ir::Node *> remove_nodes;
     std::unique_ptr<OperatorBase> op;
 
@@ -147,7 +150,6 @@ void ConstantFoldingPass::ApplyImpl(ir::Graph *graph) const {
       }
       GraphSafeRemoveNodes(graph, remove_nodes);
     }
-    delete local_scope;
   }
 }
 
