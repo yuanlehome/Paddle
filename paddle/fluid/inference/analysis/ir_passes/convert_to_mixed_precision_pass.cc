@@ -189,6 +189,7 @@ void FixCastAttr(framework::ir::Graph* graph) {
 void ConvertToMixedPrecisionPass::ApplyImpl(framework::ir::Graph* graph) const {
   auto enable_gpu_fp16 = Get<bool>("enable_gpu_fp16");
   if (!enable_gpu_fp16) return;
+  CHECK_NOTNULL(graph);
   CHECK_EQ(graph->IsMainGraph(), true);
   // Init and Prepare
   {
@@ -198,7 +199,7 @@ void ConvertToMixedPrecisionPass::ApplyImpl(framework::ir::Graph* graph) const {
     black_list_ = Get<std::unordered_set<std::string>>("mixed_black_list");
 
     for (size_t i = 0; i < graph->SubGraphsSize(); ++i) {
-      auto* sub_graph = main_graph_->GetSubGraph(i);
+      auto* sub_graph = graph->GetSubGraph(i);
       graphes_.push_back(sub_graph);
     }
 
@@ -219,6 +220,8 @@ void ConvertToMixedPrecisionPass::ApplyImpl(framework::ir::Graph* graph) const {
 
     CHECK_EQ(framework::ir::VarDescIsConsistency(*graph), true);
   }
+
+  //
 }
 
 framework::ir::Node* ConvertToMixedPrecisionPass::GetRealVarNode(
