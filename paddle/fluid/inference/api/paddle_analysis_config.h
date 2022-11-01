@@ -114,7 +114,7 @@ struct DistConfig {
   std::string carrier_id() const { return carrier_id_; }
 
  protected:
-  // DistModel Inference related
+  // DistModel Inference related.
   bool use_dist_model_{false};  // whether use DistModel or not
   std::vector<std::string> trainer_endpoints_{};  // all trainers' endpoints
   std::string current_endpoint_{};                // current trainer's endpoint
@@ -979,7 +979,8 @@ struct PD_INFER_DECL AnalysisConfig {
   mutable std::string prog_file_;
   mutable std::string params_file_;
 
-  // Mixed precision.
+  // Mixed precision related.
+  Precision mixed_precision_mode_{Precision::kFloat32};
   std::unordered_set<std::string> mixed_black_list_;
 
   // GPU related.
@@ -993,20 +994,20 @@ struct PD_INFER_DECL AnalysisConfig {
   bool use_external_stream_{false};
   void* exec_stream_{nullptr};
 
-  // NPU related
+  // NPU related.
   bool use_npu_{false};
   int npu_device_id_{0};
 
-  // CustomDevice related
+  // CustomDevice related.
   bool use_custom_device_{false};
   int custom_device_id_{0};
   std::string custom_device_type_;
 
-  // ONNXRuntime related
+  // ONNXRuntime related.
   bool use_onnxruntime_{false};
   bool enable_ort_optimization_{false};
 
-  // Padding related
+  // Padding related.
   bool use_fc_padding_{true};
 
   // TensorRT related.
@@ -1102,7 +1103,7 @@ struct PD_INFER_DECL AnalysisConfig {
   std::string xpu_precision_;
   bool xpu_adaptive_seqlen_;
 
-  // NNAdapter related
+  // NNAdapter related.
   LiteNNAdapterConfig nnadapter_config_;
 
   // mkldnn related.
@@ -1168,10 +1169,10 @@ struct PD_INFER_DECL AnalysisConfig {
   std::string opt_cache_dir_;
   friend class paddle_infer::experimental::InternalUtils;
 
-  // fleet exe related
+  // fleet exe related.
   DistConfig dist_config_{};
 
-  // jit engine related
+  // jit engine related.
   // NOTE(Aureliue84): In case of Predictor in JITLayer, program is from outer
   // which means Predictor should apply optimization by calling
   // PrepareProgram(). So we add this flag to control the process.

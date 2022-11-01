@@ -100,13 +100,16 @@ void AnalysisConfig::EnableUseGpu(
   gpu_device_id_ = device_id;
   if (precision_mode == Precision::kFloat32) {
     // default
-  } else if (precision_mode == Precision::kHalf) {
+  } else if (precision_mode == Precision::kHalf ||
+             precision_mode == Precision::kBf16) {
     enable_gpu_fp16_ = true;
     mixed_black_list_ = black_list;
+    mixed_precision_mode_ = precision_mode;
   } else {
-    LOG(ERROR) << "The native GPU inference currently only supports "
-                  "float32/float16 precision. Please check the parameters you "
-                  "specified in EnableUseGpu or enable_use_gpu function.";
+    LOG(ERROR)
+        << "The native GPU inference currently only supports "
+           "float32/float16/bfloat16 precision. Please check the parameters "
+           "you specified in EnableUseGpu or enable_use_gpu function.";
   }
 #else
   LOG(ERROR) << "PaddlePaddle of non GPU version, Please recompile "
@@ -390,6 +393,7 @@ AnalysisConfig::AnalysisConfig(const AnalysisConfig &other) {
   // Mixed precision related.
   CP_MEMBER(mixed_black_list_);
   CP_MEMBER(enable_gpu_fp16_);
+  CP_MEMBER(mixed_precision_mode_);
 
   CP_MEMBER(enable_memory_optim_);
   // TensorRT related.

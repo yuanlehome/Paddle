@@ -28,6 +28,7 @@
 #include "paddle/fluid/inference/analysis/passes/ir_graph_clean_pass.h"
 #include "paddle/fluid/inference/io.h"
 #include "paddle/phi/common/bfloat16.h"
+#include "paddle/phi/common/data_type.h"
 #include "paddle/phi/common/float16.h"
 #include "paddle/phi/common/layout.h"
 #include "paddle/phi/core/tensor_meta.h"
@@ -189,11 +190,14 @@ void FixCastAttr(framework::ir::Graph* graph) {
 void ConvertToMixedPrecisionPass::ApplyImpl(framework::ir::Graph* graph) const {
   auto enable_gpu_fp16 = Get<bool>("enable_gpu_fp16");
   if (!enable_gpu_fp16) return;
+
   CHECK_NOTNULL(graph);
   CHECK_EQ(graph->IsMainGraph(), true);
+
   // Init and Prepare
   {
-    mixed_precision_ = phi::DataType::FLOAT16;
+    mixed_precision_ =
+        static_cast<phi::DataType>(Get<int>("mixed_precision_mode"));
     backend_ = phi::Backend::GPU;
     keep_io_types_ = true;
     black_list_ = Get<std::unordered_set<std::string>>("mixed_black_list");

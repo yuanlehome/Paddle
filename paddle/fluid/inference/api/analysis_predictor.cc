@@ -1265,6 +1265,8 @@ void AnalysisPredictor::PrepareArgument() {
   argument_.SetModelPrecision(static_cast<int>(model_precision_));
   argument_.SetMixedBlackList(config_.mixed_black_list_);
   argument_.SetEnableGPUFp16(config_.enable_gpu_fp16_);
+  argument_.SetMixedPrecisionMode(static_cast<int>(
+      paddle::ConvertPrecision(config_.mixed_precision_mode_)));
 }
 
 // NOTE All the members in AnalysisConfig should be copied to Argument.
