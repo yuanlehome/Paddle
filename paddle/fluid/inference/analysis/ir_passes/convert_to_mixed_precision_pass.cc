@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "paddle/fluid/inference/analysis/passes/convert_to_mixed_precision.h"
+#include "paddle/fluid/inference/analysis/ir_passes/convert_to_mixed_precision_pass.h"
 
 #include <algorithm>
 #include <iterator>
@@ -22,24 +22,14 @@
 #include <unordered_set>
 #include <utility>
 
-#include "paddle/fluid/framework/block_desc.h"
 #include "paddle/fluid/framework/executor.h"
-#include "paddle/fluid/framework/framework.pb.h"
-#include "paddle/fluid/framework/ir/graph.h"
 #include "paddle/fluid/framework/ir/graph_helper.h"
 #include "paddle/fluid/framework/ir/graph_pattern_detector.h"
-#include "paddle/fluid/framework/ir/node.h"
-#include "paddle/fluid/framework/program_desc.h"
-#include "paddle/fluid/framework/scope.h"
-#include "paddle/fluid/framework/var_desc.h"
-#include "paddle/fluid/inference/analysis/argument.h"
 #include "paddle/fluid/inference/analysis/passes/ir_graph_clean_pass.h"
 #include "paddle/fluid/inference/io.h"
 #include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/data_type.h"
 #include "paddle/phi/common/float16.h"
 #include "paddle/phi/common/layout.h"
-#include "paddle/phi/common/place.h"
 #include "paddle/phi/core/tensor_meta.h"
 
 namespace paddle {
@@ -47,8 +37,6 @@ namespace inference {
 namespace analysis {
 
 namespace {
-using VarType = framework::proto::VarType;
-
 bool PhiKernelSupportPrecision(
     const std::string& op_type,
     phi::Backend backend,
@@ -88,96 +76,153 @@ bool GpuKernelSupportPrecision(
   return res;
 }
 
-class ConvertToMixedPrecisionPass {
-  using BlockID = size_t;
+inline bool IsFloatVarType(VarType::Type type) {
+  return (type == VarType::FP16) || (type == VarType::FP32) ||
+         (type == VarType::BF16);
+}
 
- public:
-  explicit ConvertToMixedPrecisionPass(
-      const std::string& model_file,
-      const std::string& params_file,
-      const std::string& mixed_model_file,
-      const std::string& mixed_params_file,
-      phi::DataType mixed_precision,
-      phi::Backend backend,
-      bool keep_io_types,
-      const std::unordered_set<std::string>& black_list)
-      : model_file_(model_file),
-        params_file_(params_file),
-        mixed_model_file_(mixed_model_file),
-        mixed_params_file_(mixed_params_file),
-        mixed_precision_(mixed_precision),
-        backend_(backend),
-        keep_io_types_(keep_io_types),
-        black_list_(black_list),
-        place_(paddle::CPUPlace()),
-        executor_(place_) {}
+inline bool VarNodeHasDtype(framework::ir::Node* var_node) {
+  CHECK_EQ(var_node->IsVar(), true);
+  auto type = var_node->Var()->GetType();
+  return (type == VarType::SELECTED_ROWS) || (type == VarType::LOD_TENSOR) ||
+         (type == VarType::LOD_TENSOR_ARRAY) || (type == VarType::STRINGS) ||
+         (type == VarType::VOCAB);
+}
 
-  void Run();
+// Just process special cases.
+bool OutShouldNotConvert(framework::ir::Node* var_node) {
+  auto op_node = var_node->inputs[0];
+  auto* op_desc = op_node->Op();
 
- private:
-  void LoadAndPrepare();
-  inline bool VarNodeHasDtype(framework::ir::Node* node);
-  void ConvertAllFp64ToFp32(framework::ir::Graph* graph);
-  void FixCastAttr(framework::ir::Graph* graph);
-  void SaveMixedModel();
-  void ConvertTensorDtype(BlockID block_idx);
-  void ProcessInputNode(bool support_precision,
-                        framework::ir::Node* in_node,
-                        framework::ir::Node* op_node,
-                        int* suffix,
-                        framework::BlockDesc* block_desc,
-                        VarType::Type to_type,
-                        BlockID block_idx);
+  // batch_norm's input and output (variance and mean) are the same.
+  if (op_desc->Type() == "batch_norm") {
+    auto vecs = op_desc->Output("MeanOut");
+    if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
+      return true;
+    }
+    vecs = op_desc->Output("VarianceOut");
+    if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
+      return true;
+    }
+    vecs = op_desc->Output("SavedMean");
+    if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
+      return true;
+    }
+    vecs = op_desc->Output("SavedVariance");
+    if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
+      return true;
+    }
+  }
 
-  void ProcessOutputNode(BlockID block_idx,
-                         framework::ir::Node* var_node,
-                         VarType::Type to_type);
-  inline bool IsFloatVarType(VarType::Type type);
+  return false;
+}
 
-  bool OutShouldNotConvert(framework::ir::Node* var_node);
-  // Just process special cases for weights conversion.
-  bool WeightsShouldNotConvert(framework::ir::Node* var_node);
+// Just process special cases for weights conversion.
+bool WeightsShouldNotConvert(framework::ir::Node* var_node) {
+  auto op_nodes = var_node->outputs;
+  for (auto* op_node : op_nodes) {
+    auto* op_desc = op_node->Op();
+    // batch_norm op's bias, mean, scale and variance just be float32, so we can
+    // not convert the dtype.
+    if (op_desc->Type() == "batch_norm") {
+      auto vecs = op_desc->Input("Bias");
+      if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
+        return true;
+      }
+      vecs = op_desc->Input("Mean");
+      if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
+        return true;
+      }
+      vecs = op_desc->Input("Scale");
+      if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
+        return true;
+      }
+      vecs = op_desc->Input("Variance");
+      if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
+        return true;
+      }
+    } else if (op_desc->Type() == "fused_multi_transformer") {
+      auto vecs = op_desc->Input("LnScale");
+      if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
+        return true;
+      }
 
-  // To support multi block, we need to consider a lot of special cases.
-  // Return Node* which first appers in block.
-  framework::ir::Node* GetRealVarNode(BlockID block_idx,
-                                      framework::ir::Node* node);
-  void FindVarsInMultiBlock();
-  inline bool VarIsMultiPrecisionOpsOut(BlockID block_idx,
-                                        framework::ir::Node* op_node);
+      vecs = op_desc->Input("LnBias");
+      if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
+        return true;
+      }
 
- private:
-  // A trick. Patch for strange op, which input name equal to output name, such
-  // as `fused_multi_transformer`
-  void PatchForStrangeOp();
+      vecs = op_desc->Input("FFNLnScale");
+      if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
+        return true;
+      }
 
- private:
-  std::string model_file_;
-  std::string params_file_;
-  std::string mixed_model_file_;
-  std::string mixed_params_file_;
-  phi::DataType mixed_precision_;
-  phi::Backend backend_;
-  bool keep_io_types_;
-  std::unordered_set<std::string> black_list_;
-  paddle::CPUPlace place_;
-  framework::Executor executor_;
-  framework::Scope scope_;
+      vecs = op_desc->Input("FFNLnBias");
+      if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
+        return true;
+      }
+    }
+  }
 
-  std::unordered_map<framework::ir::Node*, framework::ir::Node*> cast_map_;
-  std::unordered_map<std::string, std::pair<VarType::Type, BlockID>>
-      vars_in_multi_block_with_pair_;
-  std::unordered_map<std::string, std::vector<std::string>>
-      vars_in_multi_block_with_ops_;
-  int suffix_{0};
+  return false;
+}
 
-  std::unique_ptr<framework::ProgramDesc> program_desc_{nullptr};
-  std::unique_ptr<framework::ir::Graph> main_graph_{nullptr};
-  std::vector<framework::ir::Graph*> graphes_;
-};
+// We modify op's input output precision, and we need to fix cast op in_dtype
+// and out_dtype attribute.
+void FixCastAttr(framework::ir::Graph* graph) {
+  auto op_nodes = framework::ir::TopologySortOperations(*graph);
+  for (auto* op_node : op_nodes) {
+    if (!op_node->IsOp()) continue;
+    auto op_type = op_node->Op()->Type();
+    if (op_type != "cast") continue;
+    auto input = op_node->inputs[0];
+    auto output = op_node->outputs[0];
+    op_node->Op()->SetAttr("in_dtype",
+                           static_cast<int>(input->Var()->GetDataType()));
+    op_node->Op()->SetAttr("out_dtype",
+                           static_cast<int>(output->Var()->GetDataType()));
+  }
+}
+
+}  // namespace
+
+void ConvertToMixedPrecisionPass::ApplyImpl(framework::ir::Graph* graph) const {
+  auto enable_gpu_fp16 = Get<bool>("enable_gpu_fp16");
+  if (!enable_gpu_fp16) return;
+  CHECK_EQ(graph->IsMainGraph(), true);
+  // Init and Prepare
+  {
+    mixed_precision_ = phi::DataType::FLOAT16;
+    backend_ = phi::Backend::GPU;
+    keep_io_types_ = true;
+    black_list_ = Get<std::unordered_set<std::string>>("mixed_black_list");
+
+    for (size_t i = 0; i < graph->SubGraphsSize(); ++i) {
+      auto* sub_graph = main_graph_->GetSubGraph(i);
+      graphes_.push_back(sub_graph);
+    }
+
+    FindVarsInMultiBlock();
+  }
+
+  for (size_t i = 0; i < graphes_.size(); ++i) {
+    auto* graph = graphes_[i];
+    VLOG(2) << " --------  handle subgraph " << i << ", has "
+            << graph->Nodes().size() << " nodes --------";
+
+    ConvertAllFp64ToFp32(graph);
+    ConvertTensorDtype(i);
+    FixCastAttr(graph);
+
+    // A trick
+    PatchForStrangeOp();
+
+    CHECK_EQ(framework::ir::VarDescIsConsistency(*graph), true);
+  }
+}
 
 framework::ir::Node* ConvertToMixedPrecisionPass::GetRealVarNode(
-    BlockID block_idx, framework::ir::Node* var_node) {
+    BlockID block_idx, framework::ir::Node* var_node) const {
   CHECK_EQ(var_node->IsVar(), true);
 
   if (vars_in_multi_block_with_pair_.count(var_node->Name())) {
@@ -196,20 +241,11 @@ framework::ir::Node* ConvertToMixedPrecisionPass::GetRealVarNode(
   return var_node;
 }
 
-inline bool ConvertToMixedPrecisionPass::VarNodeHasDtype(
-    framework::ir::Node* var_node) {
-  CHECK_EQ(var_node->IsVar(), true);
-  auto type = var_node->Var()->GetType();
-  return (type == VarType::SELECTED_ROWS) || (type == VarType::LOD_TENSOR) ||
-         (type == VarType::LOD_TENSOR_ARRAY) || (type == VarType::STRINGS) ||
-         (type == VarType::VOCAB);
-}
-
 // op1(fp32) -> var1, op2(fp16) -> var1
 // if and only if op1 and op2 both support fp16, we convert op1 and op2's
 // precision.
-inline bool ConvertToMixedPrecisionPass::VarIsMultiPrecisionOpsOut(
-    BlockID block_idx, framework::ir::Node* op_node) {
+bool ConvertToMixedPrecisionPass::VarIsMultiPrecisionOpsOut(
+    BlockID block_idx, framework::ir::Node* op_node) const {
   CHECK_EQ(op_node->IsOp(), true);
 
   for (auto* var_node : op_node->outputs) {
@@ -238,7 +274,7 @@ void ConvertToMixedPrecisionPass::ProcessInputNode(
     int* suffix,
     framework::BlockDesc* block_desc,
     VarType::Type to_type,
-    BlockID block_idx) {
+    BlockID block_idx) const {
   if (!in_node->IsVar()) return;
   auto* real_node = GetRealVarNode(block_idx, in_node);
   if (!VarNodeHasDtype(real_node)) return;
@@ -290,7 +326,9 @@ void ConvertToMixedPrecisionPass::ProcessInputNode(
 }
 
 void ConvertToMixedPrecisionPass::ProcessOutputNode(
-    BlockID block_idx, framework::ir::Node* var_node, VarType::Type to_type) {
+    BlockID block_idx,
+    framework::ir::Node* var_node,
+    VarType::Type to_type) const {
   if (!var_node->IsVar()) return;
   auto* real_node = GetRealVarNode(block_idx, var_node);
   if (!VarNodeHasDtype(real_node)) return;
@@ -304,95 +342,11 @@ void ConvertToMixedPrecisionPass::ProcessOutputNode(
           << prev_type << " to " << out_var->GetDataType();
 }
 
-// Just process special cases.
-bool ConvertToMixedPrecisionPass::OutShouldNotConvert(
-    framework::ir::Node* var_node) {
-  auto op_node = var_node->inputs[0];
-  auto* op_desc = op_node->Op();
-
-  // batch_norm's input and output (variance and mean) are the same.
-  if (op_desc->Type() == "batch_norm") {
-    auto vecs = op_desc->Output("MeanOut");
-    if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
-      return true;
-    }
-    vecs = op_desc->Output("VarianceOut");
-    if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
-      return true;
-    }
-    vecs = op_desc->Output("SavedMean");
-    if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
-      return true;
-    }
-    vecs = op_desc->Output("SavedVariance");
-    if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-bool ConvertToMixedPrecisionPass::WeightsShouldNotConvert(
-    framework::ir::Node* var_node) {
-  auto op_nodes = var_node->outputs;
-  for (auto* op_node : op_nodes) {
-    auto* op_desc = op_node->Op();
-    // batch_norm op's bias, mean, scale and variance just be float32, so we can
-    // not convert the dtype.
-    if (op_desc->Type() == "batch_norm") {
-      auto vecs = op_desc->Input("Bias");
-      if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
-        return true;
-      }
-      vecs = op_desc->Input("Mean");
-      if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
-        return true;
-      }
-      vecs = op_desc->Input("Scale");
-      if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
-        return true;
-      }
-      vecs = op_desc->Input("Variance");
-      if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
-        return true;
-      }
-    } else if (op_desc->Type() == "fused_multi_transformer") {
-      auto vecs = op_desc->Input("LnScale");
-      if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
-        return true;
-      }
-
-      vecs = op_desc->Input("LnBias");
-      if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
-        return true;
-      }
-
-      vecs = op_desc->Input("FFNLnScale");
-      if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
-        return true;
-      }
-
-      vecs = op_desc->Input("FFNLnBias");
-      if (std::find(vecs.begin(), vecs.end(), var_node->Name()) != vecs.end()) {
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
-
-inline bool ConvertToMixedPrecisionPass::IsFloatVarType(VarType::Type type) {
-  return (type == VarType::FP16) || (type == VarType::FP32) ||
-         (type == VarType::BF16);
-}
-
 void ConvertToMixedPrecisionPass::LoadAndPrepare() {
-  program_desc_ =
+  auto program_desc =
       inference::Load(&executor_, &scope_, model_file_, params_file_);
   main_graph_ = std::unique_ptr<framework::ir::Graph>(
-      new framework::ir::Graph(*program_desc_));
+      new framework::ir::Graph(*program_desc));
   for (size_t i = 0; i < main_graph_->SubGraphsSize(); ++i) {
     auto* graph = main_graph_->GetSubGraph(i);
     graphes_.push_back(graph);
@@ -407,21 +361,23 @@ void ConvertToMixedPrecisionPass::LoadAndPrepare() {
   FindVarsInMultiBlock();
 }
 
-void ConvertToMixedPrecisionPass::FindVarsInMultiBlock() {
+void ConvertToMixedPrecisionPass::FindVarsInMultiBlock() const {
+  auto block_num = graphes_.size();
   std::unordered_set<std::string> all_var_names_set;
-  std::vector<std::unordered_set<std::string>> block_var_names_set(
-      program_desc_->Size());
-  for (BlockID idx = 0; idx < program_desc_->Size(); ++idx) {
-    for (auto* op : program_desc_->Block(idx).AllOps()) {
-      const auto& in_names = op->InputArgumentNames();
+  std::vector<std::unordered_set<std::string>> block_var_names_set(block_num);
+  for (BlockID idx = 0; idx < block_num; ++idx) {
+    for (auto* node : graphes_[idx]->Nodes()) {
+      if (!node->IsOp()) continue;
+      auto* op_node = node->Op();
+      const auto& in_names = op_node->InputArgumentNames();
       block_var_names_set[idx].insert(in_names.begin(), in_names.end());
-      const auto& out_names = op->OutputArgumentNames();
+      const auto& out_names = op_node->OutputArgumentNames();
       block_var_names_set[idx].insert(out_names.begin(), out_names.end());
 
-      if (op->HasAttr("sub_block") == false) {
+      if (op_node->HasAttr("sub_block") == false) {
         for (const auto& name : out_names) {
           if (all_var_names_set.count(name)) {
-            vars_in_multi_block_with_ops_[name].push_back(op->Type());
+            vars_in_multi_block_with_ops_[name].push_back(op_node->Type());
           }
         }
       }
@@ -430,9 +386,9 @@ void ConvertToMixedPrecisionPass::FindVarsInMultiBlock() {
     }
   }
 
-  CHECK_GT(program_desc_->Size(), 0U);
-  for (BlockID idx = 0; idx < program_desc_->Size() - 1; ++idx) {
-    for (BlockID jdx = idx + 1; jdx < program_desc_->Size(); ++jdx) {
+  CHECK_GT(block_num, 0U);
+  for (BlockID idx = 0; idx < block_num - 1; ++idx) {
+    for (BlockID jdx = idx + 1; jdx < block_num; ++jdx) {
       std::vector<std::string> vars_in_multi_block;
       std::set_intersection(block_var_names_set[idx].begin(),
                             block_var_names_set[idx].end(),
@@ -449,7 +405,7 @@ void ConvertToMixedPrecisionPass::FindVarsInMultiBlock() {
 }
 
 void ConvertToMixedPrecisionPass::ConvertAllFp64ToFp32(
-    framework::ir::Graph* graph) {
+    framework::ir::Graph* graph) const {
   auto op_nodes = framework::ir::TopologySortOperations(*graph);
   for (auto* op_node : op_nodes) {
     if (!op_node->IsOp()) continue;
@@ -512,7 +468,7 @@ void ConvertToMixedPrecisionPass::Run() {
   SaveMixedModel();
 }
 
-void ConvertToMixedPrecisionPass::ConvertTensorDtype(BlockID block_idx) {
+void ConvertToMixedPrecisionPass::ConvertTensorDtype(BlockID block_idx) const {
   auto* graph = graphes_[block_idx];
   VarType::Type to_type;
   if (mixed_precision_ == phi::DataType::FLOAT16) {
@@ -738,23 +694,6 @@ void ConvertToMixedPrecisionPass::ConvertTensorDtype(BlockID block_idx) {
               << " low precision ops in " << block_idx << " subgraph";
 }
 
-// We modify op's input output precision, and we need to fix cast op in_dtype
-// and out_dtype attribute.
-void ConvertToMixedPrecisionPass::FixCastAttr(framework::ir::Graph* graph) {
-  auto op_nodes = framework::ir::TopologySortOperations(*graph);
-  for (auto* op_node : op_nodes) {
-    if (!op_node->IsOp()) continue;
-    auto op_type = op_node->Op()->Type();
-    if (op_type != "cast") continue;
-    auto input = op_node->inputs[0];
-    auto output = op_node->outputs[0];
-    op_node->Op()->SetAttr("in_dtype",
-                           static_cast<int>(input->Var()->GetDataType()));
-    op_node->Op()->SetAttr("out_dtype",
-                           static_cast<int>(output->Var()->GetDataType()));
-  }
-}
-
 void ConvertToMixedPrecisionPass::SaveMixedModel() {
   framework::ProgramDesc mixed_program_desc;
   framework::ir::GraphToProgram(*main_graph_, &mixed_program_desc);
@@ -832,7 +771,7 @@ void ConvertToMixedPrecisionPass::SaveMixedModel() {
   StrToBinary(mixed_params_file_, SerializeParams());
 }
 
-void ConvertToMixedPrecisionPass::PatchForStrangeOp() {
+void ConvertToMixedPrecisionPass::PatchForStrangeOp() const {
   for (auto* graph : graphes_) {
     for (auto op_node : framework::ir::TopologySortOperations(*graph)) {
       if (op_node->Name() == "fused_multi_transformer") {
@@ -846,7 +785,6 @@ void ConvertToMixedPrecisionPass::PatchForStrangeOp() {
     }
   }
 }
-}  // namespace
 
 void AddCastOp(
     framework::ir::Graph* graph,
@@ -871,6 +809,7 @@ void AddCastOp(
     desc.SetAttr("with_quant_attr", false);
     desc.Flush();
   };
+  if (from_type == to_type) return;
 
   if (map->count(node) == 0) {
     // insert cast op before node.
@@ -937,3 +876,6 @@ void ConvertToMixedPrecision(
 }  // namespace analysis
 }  // namespace inference
 }  // namespace paddle
+
+REGISTER_PASS(convert_to_mixed_precision_pass,
+              paddle::inference::analysis::ConvertToMixedPrecisionPass);

@@ -25,7 +25,7 @@ using paddle::framework::proto::VarType;
 
 // Get all model's weights and return the data_type, e.g., fp16/bf16 or fp32.
 phi::DataType GetModelPrecision(const framework::ProgramDesc& program) {
-  std::set<VarType::Type> model_types{
+  std::unordered_set<VarType::Type> model_types{
       VarType::FP32,
       VarType::FP16,
       VarType::BF16,

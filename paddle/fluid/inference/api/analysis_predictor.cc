@@ -37,7 +37,7 @@
 #include "paddle/fluid/framework/var_type_traits.h"
 #include "paddle/fluid/framework/version.h"
 #include "paddle/fluid/inference/analysis/helper.h"
-#include "paddle/fluid/inference/analysis/passes/convert_to_mixed_precision.h"
+#include "paddle/fluid/inference/analysis/ir_passes/convert_to_mixed_precision_pass.h"
 #include "paddle/fluid/inference/analysis/passes/memory_optimize_pass.h"
 #include "paddle/fluid/inference/api/helper.h"
 #include "paddle/fluid/inference/api/infer_context.h"
@@ -1064,7 +1064,7 @@ void AnalysisPredictor::PrepareArgument() {
   argument_.SetUseGPU(config_.use_gpu());
   argument_.SetUseFcPadding(config_.use_fc_padding());
   argument_.SetGPUDeviceId(config_.gpu_device_id());
-  argument_.SetEnableAnalysisOptim(config_.enable_ir_optim_);
+  argument_.SetEnableIrOptim(config_.ir_optim());
   argument_.SetEnableMemoryOptim(config_.enable_memory_optim());
   argument_.SetModelFromMemory(config_.model_from_memory_);
   // Analyze inference_program
@@ -1245,8 +1245,16 @@ void AnalysisPredictor::PrepareArgument() {
     }
   }
   if (!config_.ir_optim()) {
-    passes.clear();
-    LOG(INFO) << "ir_optim is turned off, no IR pass will be executed";
+    argument_.SetEnableIrOptim(false);
+    if (config_.enable_gpu_fp16_) {
+      argument_.SetEnableIrOptim(true);
+      std::vector<std::string>({"convert_to_mixed_precision_pass"})
+          .swap(passes);
+      LOG(INFO) << "This model run in native GPU float16 mode with no ir "
+                   "optimization";
+    } else {
+      LOG(INFO) << "ir_optim is turned off, no IR pass will be executed";
+    }
   }
   argument_.SetDisableLogs(config_.glog_info_disabled());
   argument_.SetIrAnalysisPasses(passes);
@@ -1256,6 +1264,7 @@ void AnalysisPredictor::PrepareArgument() {
   // mixed precison.
   argument_.SetModelPrecision(static_cast<int>(model_precision_));
   argument_.SetMixedBlackList(config_.mixed_black_list_);
+  argument_.SetEnableGPUFp16(config_.enable_gpu_fp16_);
 }
 
 // NOTE All the members in AnalysisConfig should be copied to Argument.

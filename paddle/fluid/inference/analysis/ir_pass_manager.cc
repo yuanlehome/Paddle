@@ -99,6 +99,7 @@ void IRPassManager::CreatePasses(Argument *argument,
     pass->Set(
         "mixed_black_list",
         new std::unordered_set<std::string>(argument->mixed_black_list()));
+    pass->Set("enable_gpu_fp16", new bool(argument->enable_gpu_fp16()));
 
     if (pass_name == "graph_viz_pass") {
       std::string optim_cache_dir = argument->optim_cache_dir();

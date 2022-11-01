@@ -3,6 +3,25 @@ cc_library(
   SRCS subgraph_util.cc
   DEPS subgraph_detector)
 
+if(WITH_GPU)
+  cc_library(
+    convert_to_mixed_precision_pass
+    SRCS convert_to_mixed_precision_pass.cc
+    DEPS ir_graph_clean_pass graph_pattern_detector)
+
+  set(analysis_deps
+      ${analysis_deps} convert_to_mixed_precision_pass
+      CACHE INTERNAL "")
+
+  set(pass_file
+      ${PADDLE_BINARY_DIR}/paddle/fluid/inference/api/paddle_inference_pass.h.tmp
+  )
+  file(APPEND ${pass_file} "USE_PASS(convert_to_mixed_precision_pass);\n")
+  set(INFER_IR_PASSES
+      ${INFER_IR_PASSES} convert_to_mixed_precision_pass
+      CACHE INTERNAL "")
+endif()
+
 if(WITH_GPU AND TENSORRT_FOUND)
   cc_library(
     tensorrt_subgraph_pass
