@@ -194,27 +194,26 @@ void ConvertToMixedPrecisionPass::ApplyImpl(framework::ir::Graph* graph) const {
   CHECK_NOTNULL(graph);
   CHECK_EQ(graph->IsMainGraph(), true);
 
-  // Init and Prepare
-  {
-    mixed_precision_ =
-        static_cast<phi::DataType>(Get<int>("mixed_precision_mode"));
-    backend_ = phi::Backend::GPU;
-    keep_io_types_ = true;
-    black_list_ = Get<std::unordered_set<std::string>>("mixed_black_list");
+  // Init
+  mixed_precision_ =
+      static_cast<phi::DataType>(Get<int>("mixed_precision_mode"));
+  backend_ = phi::Backend::GPU;
+  keep_io_types_ = true;
+  black_list_ = Get<std::unordered_set<std::string>>("mixed_black_list");
 
-    for (size_t i = 0; i < graph->SubGraphsSize(); ++i) {
-      auto* sub_graph = graph->GetSubGraph(i);
-      graphes_.push_back(sub_graph);
-    }
-
-    FindVarsInMultiBlock();
+  // Prepare
+  auto block_num = graph->SubGraphsSize();
+  graphes_.resize(block_num);
+  for (size_t i = 0; i < block_num; ++i) {
+    graphes_[i] = graph->GetSubGraph(i);
   }
+  FindVarsInMultiBlock();
 
-  for (size_t i = 0; i < graphes_.size(); ++i) {
+  // Main logic
+  for (size_t i = 0; i < block_num; ++i) {
     auto* graph = graphes_[i];
     VLOG(2) << " --------  handle subgraph " << i << ", has "
             << graph->Nodes().size() << " nodes --------";
-
     ConvertAllFp64ToFp32(graph);
     ConvertTensorDtype(i);
     FixCastAttr(graph);
