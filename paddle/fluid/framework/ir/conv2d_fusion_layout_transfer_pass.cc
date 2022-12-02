@@ -44,7 +44,6 @@ void Conv2dFusionLayoutTransferPass::ApplyImpl(ir::Graph *graph) const {
   auto *block_desc = (*iter)->Op()->Block();
 
   for (auto *node : op_nodes) {
-    // TODO(liuyuanle): use a target_list with unordered_set<string>
     if (node->IsOp() && node->Name() == "conv2d_fusion") {
       auto *op_desc = node->Op();
       auto &&data_format = op_desc->GetAttrIfExists<std::string>("data_format");

@@ -13,11 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License. */
 
 #include <array>
+#include <type_traits>
 
 #include "paddle/fluid/framework/conv_search_cache.h"
 #include "paddle/fluid/framework/op_registry.h"
 #include "paddle/fluid/operators/conv_cudnn_op_cache.h"
 #include "paddle/fluid/operators/conv_op.h"
+#include "paddle/fluid/operators/layout_utils.h"
 #include "paddle/fluid/platform/device/gpu/gpu_dnn.h"
 #include "paddle/phi/kernels/funcs/padding.h"
 
@@ -62,27 +64,70 @@ class CUDNNConvFusionOpKernel : public framework::OpKernel<T> {
     bool exhaustive_search =
         FLAGS_cudnn_exhaustive_search || ctx.Attr<bool>("exhaustive_search");
 
-    const T* filter_data = filter->data<T>();
-    const T* bias_data = bias->data<T>();
-
     const std::string padding_algorithm =
         ctx.Attr<std::string>("padding_algorithm");
 
+    const std::string data_format = ctx.Attr<std::string>("data_format");
+    const bool channel_last = data_format == "NHWC";
+
+#ifdef PADDLE_WITH_HIP
+    // HIP MIOPEN ONLY SUPPORT NCHW format
+    auto compute_format = DataLayout::kNCHW;
+#else
+    // Tensor Core introduced from Volta GPUs supports more faster conv op
+    // with FP16 in NHWC data format.
+    const bool compute_in_nhwc =
+        std::is_same<T, paddle::platform::float16>::value &&
+        IsVoltaOrLater(dev_ctx);
+    auto compute_format =
+        compute_in_nhwc && channel_last ? DataLayout::kNHWC : DataLayout::kNCHW;
+#endif
+    VLOG(3) << "Compute ConvFusionOp with cuDNN:"
+            << " data_format=" << data_format << " compute_format="
+            << (compute_format == DataLayout::kNHWC ? "NHWC" : "NCHW");
+
+    // ------------ transformed tensor -----------
     Tensor transformed_input_channel(input->dtype());
     Tensor transformed_output(output->dtype());
-    transformed_input_channel = *input;
-    transformed_output = *output;
-    T* output_data = transformed_output.data<T>();
+    Tensor transformed_filter_channel(filter->dtype());
 
-    const T* residual_data = residual ? residual->data<T>() : output_data;
+    if (channel_last && compute_format == DataLayout::kNCHW) {
+      VLOG(3) << "Transform input tensor from NHWC to NCHW.";
+      ResizeToChannelFirst<phi::GPUContext, T>(
+          dev_ctx, input, &transformed_input_channel);
+      TransToChannelFirst<phi::GPUContext, T>(
+          dev_ctx, input, &transformed_input_channel);
+      ResizeToChannelFirst<phi::GPUContext, T>(
+          dev_ctx, output, &transformed_output);
+    } else {
+      transformed_input_channel.ShareDataWith(*input);
+      transformed_output.ShareDataWith(*output);
+    }
+
+    if (compute_format == DataLayout::kNHWC) {
+      VLOG(3) << "Transform filter tensor from NCHW to NHWC.";
+      ResizeToChannelLast<phi::GPUContext, T>(
+          dev_ctx, filter, &transformed_filter_channel);
+      TransToChannelLast<phi::GPUContext, T>(
+          dev_ctx, filter, &transformed_filter_channel);
+    } else {
+      transformed_filter_channel.ShareDataWith(*filter);
+    }
 
     // update padding and dilation
     auto in_dims = transformed_input_channel.dims();
-    auto filter_dims = filter->dims();
-    framework::DDim in_data_dims = phi::slice_ddim(in_dims, 2, in_dims.size());
+    auto filter_dims = transformed_filter_channel.dims();
+    framework::DDim in_data_dims;
+    framework::DDim filter_data_dims;
 
-    framework::DDim filter_data_dims =
-        phi::slice_ddim(filter_dims, 2, filter_dims.size());
+    if (compute_format == DataLayout::kNCHW) {
+      in_data_dims = slice_ddim(in_dims, 2, in_dims.size());
+      filter_data_dims = slice_ddim(filter_dims, 2, filter_dims.size());
+    } else {
+      in_data_dims = slice_ddim(in_dims, 1, in_dims.size() - 1);
+      filter_data_dims = slice_ddim(filter_dims, 1, filter_dims.size() - 1);
+    }
+
     std::vector<int> ksize = phi::vectorize<int>(filter_data_dims);
     UpdatePaddingAndDilation(
         &paddings, &dilations, padding_algorithm, in_data_dims, strides, ksize);
@@ -96,24 +141,39 @@ class CUDNNConvFusionOpKernel : public framework::OpKernel<T> {
       std::vector<int> padding_diff(data_dim);
       std::vector<int> new_input_shape_vec(data_dim + 2);
       new_input_shape_vec[0] = transformed_input_channel.dims()[0];
-      new_input_shape_vec[1] = transformed_input_channel.dims()[1];
+      if (compute_format == DataLayout::kNCHW) {
+        new_input_shape_vec[1] = transformed_input_channel.dims()[1];
+      } else {
+        new_input_shape_vec[data_dim + 1] =
+            transformed_input_channel.dims()[data_dim + 1];
+      }
 
       std::vector<int> input_pad(transformed_input_channel.dims().size() * 2,
                                  0);
       for (size_t i = 0; i < data_dim; ++i) {
         padding_diff[i] = std::abs(paddings[2 * i] - paddings[2 * i + 1]);
         padding_common[i] = std::min(paddings[2 * i], paddings[2 * i + 1]);
-        new_input_shape_vec[i + 2] =
-            transformed_input_channel.dims()[i + 2] + padding_diff[i];
-        input_pad[2 * i + 4] = paddings[2 * i] - padding_common[i];
-        input_pad[2 * i + 4 + 1] = paddings[2 * i + 1] - padding_common[i];
+        if (compute_format == DataLayout::kNCHW) {
+          new_input_shape_vec[i + 2] =
+              transformed_input_channel.dims()[i + 2] + padding_diff[i];
+        } else {
+          new_input_shape_vec[i + 1] =
+              transformed_input_channel.dims()[i + 1] + padding_diff[i];
+        }
+        if (compute_format == DataLayout::kNCHW) {
+          input_pad[2 * i + 4] = paddings[2 * i] - padding_common[i];
+          input_pad[2 * i + 4 + 1] = paddings[2 * i + 1] - padding_common[i];
+        } else {
+          input_pad[2 * i + 2] = paddings[2 * i] - padding_common[i];
+          input_pad[2 * i + 2 + 1] = paddings[2 * i + 1] - padding_common[i];
+        }
       }
       framework::DDim new_input_shape(phi::make_ddim(new_input_shape_vec));
       transformed_input.Resize(new_input_shape);
-      auto& dev_ctx = ctx.template device_context<phi::GPUContext>();
-
-      transformed_input =
-          ctx.AllocateTmpTensor<T, phi::GPUContext>(new_input_shape, dev_ctx);
+      dev_ctx.template Alloc<T>(&transformed_input);
+      // transformed_input =
+      //     ctx.AllocateTmpTensor<T, phi::GPUContext>(new_input_shape,
+      //     dev_ctx);
       const int rank = transformed_input_channel.dims().size();
       T pad_value(0.0);
       switch (rank) {
@@ -154,7 +214,24 @@ class CUDNNConvFusionOpKernel : public framework::OpKernel<T> {
       }
     }
 
+    LOG(INFO) << "transformed_input.dims: " << transformed_input.dims()[0]
+              << " " << transformed_input.dims()[1] << " "
+              << transformed_input.dims()[2] << " "
+              << transformed_input.dims()[3];
+    LOG(INFO) << "transformed_output.dims: " << transformed_output.dims()[0]
+              << " " << transformed_output.dims()[1] << " "
+              << transformed_output.dims()[2] << " "
+              << transformed_output.dims()[3];
+    LOG(INFO) << "transformed_filter_channel.dims: "
+              << transformed_filter_channel.dims()[0] << " "
+              << transformed_filter_channel.dims()[1] << " "
+              << transformed_filter_channel.dims()[2] << " "
+              << transformed_filter_channel.dims()[3];
     const T* input_data = transformed_input.data<T>();
+    T* output_data = transformed_output.data<T>();
+    const T* filter_data = transformed_filter_channel.data<T>();
+    const T* bias_data = bias->data<T>();
+    const T* residual_data = residual ? residual->data<T>() : output_data;
 
     // ------------------- cudnn descriptors ---------------------
     ScopedTensorDescriptor input_desc;
@@ -163,10 +240,7 @@ class CUDNNConvFusionOpKernel : public framework::OpKernel<T> {
     ScopedTensorDescriptor bias_desc;
     ScopedConvolutionDescriptor conv_desc;
     ScopedActivationDescriptor act_desc;
-    DataLayout layout = DataLayout::kNCHW;
-    if (input->dims().size() == 5) {
-      layout = DataLayout::kNCDHW;
-    }
+    DataLayout layout = compute_format;
 #ifdef PADDLE_WITH_HIP
     miopenConvolutionDescriptor_t cudnn_conv_desc =
         conv_desc.descriptor<T>(padding_common, strides, dilations);
@@ -180,8 +254,8 @@ class CUDNNConvFusionOpKernel : public framework::OpKernel<T> {
         layout, phi::vectorize<int>(transformed_input.dims()));
     miopenTensorDescriptor_t cudnn_output_desc = output_desc.descriptor<T>(
         layout, phi::vectorize<int>(transformed_output.dims()));
-    miopenTensorDescriptor_t cudnn_filter_desc =
-        filter_desc.descriptor<T>(layout, phi::vectorize<int>(filter->dims()));
+    miopenTensorDescriptor_t cudnn_filter_desc = filter_desc.descriptor<T>(
+        layout, phi::vectorize<int>(transformed_filter_channel.dims()));
     miopenTensorDescriptor_t cudnn_bias_desc =
         bias_desc.descriptor<T>(layout, bias_dim);
     miopenActivationDescriptor_t cudnn_act_desc =
@@ -192,7 +266,7 @@ class CUDNNConvFusionOpKernel : public framework::OpKernel<T> {
     auto workspace_handle = dev_ctx.cudnn_workspace_handle();
 
     auto x_dims = phi::vectorize(transformed_input.dims());
-    auto f_dims = phi::vectorize(filter->dims());
+    auto f_dims = phi::vectorize(transformed_filter_channel.dims());
 
     size_t workspace_size = 0;
     PADDLE_ENFORCE_GPU_SUCCESS(
@@ -290,11 +364,17 @@ class CUDNNConvFusionOpKernel : public framework::OpKernel<T> {
         layout, phi::vectorize<int>(transformed_input.dims()));
     cudnnTensorDescriptor_t cudnn_output_desc = output_desc.descriptor<T>(
         layout, phi::vectorize<int>(transformed_output.dims()));
-    cudnnFilterDescriptor_t cudnn_filter_desc =
-        filter_desc.descriptor<T>(layout, phi::vectorize<int>(filter->dims()));
+    cudnnFilterDescriptor_t cudnn_filter_desc = filter_desc.descriptor<T>(
+        layout, phi::vectorize<int>(transformed_filter_channel.dims()));
     // Now only support NCHW
-    std::vector<int> bias_dim = {
-        1, static_cast<int>(transformed_output.dims()[1]), 1, 1};
+    std::vector<int> bias_dim;
+    if (compute_format == DataLayout::kNHWC) {
+      bias_dim = std::vector<int>{
+          1, 1, 1, static_cast<int>(transformed_output.dims()[3])};
+    } else {
+      bias_dim = std::vector<int>{
+          1, static_cast<int>(transformed_output.dims()[1]), 1, 1};
+    }
     cudnnTensorDescriptor_t cudnn_bias_desc =
         bias_desc.descriptor<T>(layout, bias_dim);
     cudnnActivationDescriptor_t cudnn_act_desc =
@@ -330,9 +410,10 @@ class CUDNNConvFusionOpKernel : public framework::OpKernel<T> {
 #endif  // CUDA_VERSION >= 11000 && CUDNN_VERSION >= 8000
 
     auto x_dims = phi::vectorize(transformed_input.dims());
-    auto f_dims = phi::vectorize(filter->dims());
+    auto f_dims = phi::vectorize(transformed_filter_channel.dims());
     if (!exhaustive_search) {
 #if CUDNN_VERSION >= 8000
+      LOG(INFO) << "here 1";
       int perf_count;
       int best_algo_idx = 0;
       size_t tmp_size = 0;
@@ -349,6 +430,7 @@ class CUDNNConvFusionOpKernel : public framework::OpKernel<T> {
               &perf_count,
               perf_results.get()));
       algo = (perf_results.get())[best_algo_idx].algo;
+      LOG(INFO) << "here 2";
 #else
       PADDLE_ENFORCE_GPU_SUCCESS(
           platform::dynload::cudnnGetConvolutionForwardAlgorithm(
@@ -381,6 +463,7 @@ class CUDNNConvFusionOpKernel : public framework::OpKernel<T> {
         std::array<cudnnConvolutionFwdAlgoPerf_t, kNUM_CUDNN_FWD_ALGS>
             fwd_perf_stat;
         auto cudnn_find_func = [&](void* cudnn_workspace) {
+          LOG(INFO) << "here";
           PADDLE_ENFORCE_GPU_SUCCESS(
               platform::dynload::cudnnFindConvolutionForwardAlgorithmEx(
                   handle,
@@ -429,7 +512,7 @@ class CUDNNConvFusionOpKernel : public framework::OpKernel<T> {
         return fwd_result;
       };
       AlgorithmsCache<SearchFuseResult<cudnnConvolutionFwdAlgo_t>>& algo_cache =
-          *(framework::ConvSearchCache::Instance().GetConvFusion());
+          *(ConvSearchCache::Instance().GetConvFusion());
       int search_times = ctx.Attr<int>("search_times");
       SearchFuseResult<cudnnConvolutionFwdAlgo_t> algo_result;
       search_times = std::max(
@@ -439,8 +522,13 @@ class CUDNNConvFusionOpKernel : public framework::OpKernel<T> {
         // The searched algo will be cached by `search_times` times for
         // different input dimension. For other dimensions, select the algo
         // of closest area.
-        algo_result = algo_cache.GetAlgorithm(
-            x_dims[2] * x_dims[3], search_times, 0, search_func);
+        if (channel_last) {
+          algo_result = algo_cache.GetAlgorithm(
+              x_dims[1] * x_dims[2], search_times, 0, search_func);
+        } else {
+          algo_result = algo_cache.GetAlgorithm(
+              x_dims[2] * x_dims[3], search_times, 0, search_func);
+        }
         algo = algo_result.algo;
         workspace_size_in_bytes = algo_result.workspace_size;
       } else {
@@ -545,6 +633,10 @@ class CUDNNConvFusionOpKernel : public framework::OpKernel<T> {
             x_dims[0],
             phi::make_ddim(x_dims)));
       }
+    }
+    if (channel_last && compute_format == DataLayout::kNCHW) {
+      TransToChannelLast<phi::GPUContext, T>(
+          dev_ctx, &transformed_output, output);
     }
   }
 };
