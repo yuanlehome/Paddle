@@ -15,6 +15,8 @@
 include(ExternalProject)
 # Creat a target named "third_party", which can compile external dependencies on all platform(windows/linux/mac)
 
+set(CMAKE_CXX_FLAGS "-D_GLIBCXX_USE_CXX11_ABI=0")
+
 set(THIRD_PARTY_PATH
     "${CMAKE_BINARY_DIR}/third_party"
     CACHE STRING

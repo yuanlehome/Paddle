@@ -154,6 +154,9 @@ if(NOT WIN32)
       -Wno-error=int-in-bool-context # Warning in Eigen gcc 7.2
       -Wimplicit-fallthrough=0 # Warning in tinyformat.h
       -Wno-error=maybe-uninitialized # Warning in Paddle-Lite
+      -D_GLIBCXX_USE_CXX11_ABI=0
+      -Wno-error=stringop-overread
+      -Wno-error=deprecated-declarations
       ${fsanitize})
 
   if(WITH_IPU)
@@ -192,6 +195,7 @@ if(NOT WIN32)
       -Wno-error=unused-local-typedefs
       -Wno-error=unused-function # Warnings in Numpy Header.
       -Wno-error=array-bounds # Warnings in Eigen::array
+      -D_GLIBCXX_USE_CXX11_ABI=0
   )
   if(NOT WITH_NV_JETSON
      AND NOT WITH_ARM
