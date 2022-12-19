@@ -18,7 +18,6 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include "paddle/fluid/framework/convert_utils.h"
 #include "paddle/fluid/framework/data_layout_transform.h"
 #include "paddle/fluid/framework/ir/graph_helper.h"
 #include "paddle/phi/common/layout.h"
@@ -29,38 +28,6 @@ namespace paddle {
 namespace framework {
 namespace ir {
 namespace {
-
-void TransDataLayout(DataLayout from_layout,
-                     DataLayout to_layout,
-                     const phi::DenseTensor &in,
-                     phi::DenseTensor *out) {
-  PADDLE_ENFORCE_EQ(
-      arity(in.dims()),
-      4,
-      platform::errors::InvalidArgument(
-          "Input dimension arity only can be 4, the input dimension is %s.",
-          in.dims()));
-
-  auto &pool = platform::DeviceContextPool::Instance();
-
-  auto src_dim = in.dims();
-  std::vector<int64_t> dst_dim;
-
-  auto axis = GetAxis(from_layout, to_layout);
-  dst_dim.resize(axis.size());
-  for (size_t i = 0; i < axis.size(); i++) {
-    dst_dim[i] = src_dim[axis[i]];
-  }
-
-  out->Resize(phi::make_ddim(dst_dim));
-  out->mutable_data(phi::CPUPlace(), in.dtype());
-
-  framework::VisitDataType(
-      framework::TransToProtoVarType(in.dtype()),
-      CastDataLayout(pool.Get(phi::CPUPlace()), axis, in, out));
-
-  out->set_layout(to_layout);
-}
 
 void InsertLayoutTransOp(ir::Graph *graph,
                          ir::Node *prev_node,
@@ -224,8 +191,11 @@ void Conv2dFusionLayoutTransferPass::ApplyImpl(ir::Graph *graph) const {
         phi::DenseTensor temp_tensor = *filter_tensor;
         filter_tensor->clear();
 
-        TransDataLayout(
-            DataLayout::kNCHW, DataLayout::kNHWC, temp_tensor, filter_tensor);
+        framework::TransDataLayout(DataLayout::kNCHW,
+                                   DataLayout::kNHWC,
+                                   phi::CPUPlace{},
+                                   temp_tensor,
+                                   filter_tensor);
       }
       auto op_inputs = op_node->inputs;
       for (auto *in_var_node : op_inputs) {
