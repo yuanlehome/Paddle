@@ -30,6 +30,7 @@
 
 namespace paddle_infer {
 
+/*
 using float16 = paddle::platform::float16;
 
 void Tensor::Reshape(const std::vector<int> &shape) {
@@ -363,7 +364,7 @@ void Tensor::CopyStringsFromCpu(const paddle_infer::Strings *data) {
                     0,
                     paddle::platform::errors::PreconditionNotMet(
                         "You should call Tensor::Reshape(const "
-                        "std::size_t &shape)function before copying"
+                        "std::size_t &shape) function before copying"
                         "the string data from cpu."));
   *tensor = *data;
 }
@@ -944,5 +945,5 @@ template void InternalUtils::CopyToCpuWithIoStream<bool>(
     paddle_infer::Tensor *t, bool *data, cudaStream_t stream);
 
 }  // namespace experimental
-
+*/
 }  // namespace paddle_infer

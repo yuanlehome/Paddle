@@ -18,10 +18,16 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include "paddle/phi/common/data_type.h"
+
 #if defined(PADDLE_WITH_DISTRIBUTE) && defined(PADDLE_WITH_PSCORE)
 #include "paddle/fluid/distributed/fleet_executor/fleet_executor.h"
 #endif
+
+#ifdef PADDLE_WITH_TESTING
+#include <gtest/gtest.h>
+#include <gtest/gtest_prod.h>
+#endif
+
 #include "paddle/fluid/framework/naive_executor.h"
 #include "paddle/fluid/framework/op_compatible_info.h"
 #include "paddle/fluid/inference/analysis/analyzer.h"
@@ -29,17 +35,12 @@
 #include "paddle/fluid/inference/api/details/reset_tensor_array.h"
 #include "paddle/fluid/inference/api/helper.h"
 #include "paddle/fluid/inference/api/paddle_inference_api.h"
+#include "paddle/fluid/inference/api/paddle_tensor.h"
 #include "paddle/fluid/inference/api/resource_manager.h"
 #include "paddle/fluid/platform/device/gpu/gpu_types.h"
-#include "paddle/fluid/platform/float16.h"
 #include "paddle/fluid/string/printf.h"
-#ifdef PADDLE_WITH_TESTING
-#include <gtest/gtest.h>
-#include <gtest/gtest_prod.h>
-#endif
 
 namespace paddle_infer {
-using float16 = paddle::platform::float16;
 namespace experimental {
 class InternalUtils;
 };
@@ -56,6 +57,7 @@ class InternalUtils;
 ///
 
 namespace paddle {
+namespace inference {
 
 using framework::NaiveExecutor;
 using framework::proto::ProgramDesc;
@@ -103,7 +105,7 @@ class AnalysisPredictor : public PaddlePredictor {
     if (config_.shape_range_info_collected()) {
       config_.SwitchIrOptim(false);
     }
-    int trt_identifier = config_.trt_engine_memory_sharing_identifier_;
+    int trt_identifier = config_.trt_engine_memory_sharing_identifier();
     if (trt_identifier > 0) {
       // NOTE(liuyuanle): For convenience, we set the id of the predictor to
       // negative sharing_identifier directly. In the future, this may affect
@@ -115,7 +117,7 @@ class AnalysisPredictor : public PaddlePredictor {
              "negative sharing_identifier you specified : "
           << predictor_id_;
     } else {
-      predictor_id_ = inference::GetUniqueId();
+      predictor_id_ = paddle::inference::GetUniqueId();
     }
   }
   ///
@@ -135,8 +137,9 @@ class AnalysisPredictor : public PaddlePredictor {
   /// \param[in] program program
   /// \return Whether the init function executed successfully
   ///
-  bool Init(const std::shared_ptr<framework::Scope> &parent_scope,
-            const std::shared_ptr<framework::ProgramDesc> &program = nullptr);
+  bool Init(
+      const std::shared_ptr<paddle::framework::Scope> &parent_scope,
+      const std::shared_ptr<paddle::framework::ProgramDesc> &program = nullptr);
 
   ///
   /// \brief Run the prediction engine. Deprecated. Please refer to ZeroCopyRun
@@ -169,16 +172,14 @@ class AnalysisPredictor : public PaddlePredictor {
   /// \param[in] name input name
   /// \return input tensor
   ///
-  std::unique_ptr<ZeroCopyTensor> GetInputTensor(
-      const std::string &name) override;
+  std::unique_ptr<Tensor> GetInputTensor(const std::string &name) override;
   ///
   /// \brief Get the Output Tensor object
   ///
   /// \param[in] name otuput name
   /// \return output tensor
   ///
-  std::unique_ptr<ZeroCopyTensor> GetOutputTensor(
-      const std::string &name) override;
+  std::unique_ptr<Tensor> GetOutputTensor(const std::string &name) override;
   ///
   /// \brief Get all input names and their corresponding shapes
   ///
@@ -229,7 +230,7 @@ class AnalysisPredictor : public PaddlePredictor {
   ///
   /// \param[in] scope Scope needed to create variables
   ///
-  void CreateFeedFetchVar(framework::Scope *scope);
+  void CreateFeedFetchVar(paddle::framework::Scope *scope);
   ///
   /// \brief Determine the model's inputs and outputs based on the program's
   /// feed fetch op
@@ -281,13 +282,13 @@ class AnalysisPredictor : public PaddlePredictor {
   ///
   /// \return scope
   ///
-  framework::Scope *scope() { return scope_.get(); }
+  paddle::framework::Scope *scope() { return scope_.get(); }
   ///
   /// \brief Get the inference program
   ///
   /// \return the inference program
   ///
-  framework::ProgramDesc &program() { return *inference_program_; }
+  paddle::framework::ProgramDesc &program() { return *inference_program_; }
 
   ///
   /// \brief Get the serialized program
@@ -311,7 +312,7 @@ class AnalysisPredictor : public PaddlePredictor {
   /// type, the second param is output var name of the op, and the third
   /// parameter is output tensor with the var name.
   ///
-  void RegisterOutputHook(const Exp_OutputHookFunc &hookfunc) override;
+  void RegisterOutputHook(const OutputHookFunc &hookfunc) override;
 
   ///
   /// \brief Initialize mkldnn quantizer and execute mkldnn quantization pass
@@ -335,14 +336,16 @@ class AnalysisPredictor : public PaddlePredictor {
   /// \param[in] program paddle program
   /// \return Whether the function executed successfully
   ///
-  bool PrepareProgram(const std::shared_ptr<framework::ProgramDesc> &program);
+  bool PrepareProgram(
+      const std::shared_ptr<paddle::framework::ProgramDesc> &program);
   ///
   /// \brief Prepare scope environment, each predictor has its own scope
   ///
   /// \param[in] parent_scope The scope of the predictor to be cloned, or null
   /// \return Whether the function executed successfully
   ///
-  bool PrepareScope(const std::shared_ptr<framework::Scope> &parent_scope);
+  bool PrepareScope(
+      const std::shared_ptr<paddle::framework::Scope> &parent_scope);
   ///
   /// \brief Create an Executor object
   ///
@@ -377,7 +380,7 @@ class AnalysisPredictor : public PaddlePredictor {
   /// \return Whether the function executed successfully
   ///
   bool SetFeed(const std::vector<PaddleTensor> &input_datas,
-               framework::Scope *scope);
+               paddle::framework::Scope *scope);
   ///
   /// \brief Get the output data, only used in Run()
   ///
@@ -386,7 +389,7 @@ class AnalysisPredictor : public PaddlePredictor {
   /// \return Whether the function executed successfully
   ///
   bool GetFetch(std::vector<PaddleTensor> *output_data,
-                framework::Scope *scope);
+                paddle::framework::Scope *scope);
   ///
   /// \brief Get the output data, only used in GetFetch()
   ///
@@ -514,16 +517,16 @@ class AnalysisPredictor : public PaddlePredictor {
   std::unique_ptr<Argument> argument_;
   Argument::fusion_statis_t fusion_statis_;
   std::unique_ptr<NaiveExecutor> executor_;
-  platform::Place place_;
-  std::shared_ptr<framework::Scope> scope_;
-  framework::Scope *sub_scope_{nullptr};
-  std::shared_ptr<framework::ProgramDesc> inference_program_;
-  framework::OpCompatibleMap op_compatible_map_;
-  std::vector<framework::OpDesc *> feeds_;
+  paddle::platform::Place place_;
+  std::shared_ptr<paddle::framework::Scope> scope_;
+  paddle::framework::Scope *sub_scope_{nullptr};
+  std::shared_ptr<paddle::framework::ProgramDesc> inference_program_;
+  paddle::framework::OpCompatibleMap op_compatible_map_;
+  std::vector<paddle::framework::OpDesc *> feeds_;
   std::map<std::string, size_t> feed_names_;
   // Sorted according to the idx.
   std::map<size_t, std::string> idx2feeds_;
-  std::vector<framework::OpDesc *> fetches_;
+  std::vector<paddle::framework::OpDesc *> fetches_;
   std::map<size_t, std::string> idx2fetches_;
 
   phi::DataType model_precision_{phi::DataType::FLOAT32};
@@ -541,7 +544,7 @@ class AnalysisPredictor : public PaddlePredictor {
   // Memory buffer for feed inputs. The temporary LoDTensor will cause serious
   // concurrency problems, wrong results and memory leak, so cache them.
   std::vector<phi::DenseTensor> feed_tensors_;
-  details::TensorArrayBatchCleaner tensor_array_batch_cleaner_;
+  paddle::details::TensorArrayBatchCleaner tensor_array_batch_cleaner_;
   // A mutex help to make Clone thread safe.
   std::mutex clone_mutex_;
 
@@ -553,7 +556,7 @@ class AnalysisPredictor : public PaddlePredictor {
   int root_predictor_id_{-1};
 
  private:
-  std::vector<Exp_OutputHookFunc> hookfuncs_;
+  std::vector<OutputHookFunc> hookfuncs_;
 
   // Some status here that help to determine the status inside the predictor.
   bool status_is_cloned_{false};
@@ -576,4 +579,5 @@ class AnalysisPredictor : public PaddlePredictor {
   friend class paddle_infer::experimental::InternalUtils;
 };
 
+}  // namespace inference
 }  // namespace paddle

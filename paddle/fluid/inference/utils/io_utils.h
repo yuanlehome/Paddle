@@ -22,11 +22,9 @@
 #include "paddle/fluid/inference/utils/shape_range_info.pb.h"
 
 namespace paddle {
-struct PaddleTensor;
-}  // namespace paddle
-
-namespace paddle {
 namespace inference {
+
+using paddle_infer::PaddleTensor;
 
 constexpr uint32_t kCurPDTensorVersion = 0;
 

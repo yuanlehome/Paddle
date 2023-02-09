@@ -44,9 +44,7 @@ limitations under the License. */
 
 namespace paddle_infer {
 
-using PrecisionType = paddle::AnalysisConfig::Precision;
-using Config = paddle::AnalysisConfig;
-using DistConfig = paddle::DistConfig;
+using PrecisionType = AnalysisConfig::Precision;
 
 ///
 /// \class Predictor
@@ -82,7 +80,7 @@ class PD_INFER_DECL Predictor {
   Predictor() = delete;
   ~Predictor() {}
   // Use for clone
-  explicit Predictor(std::unique_ptr<paddle::PaddlePredictor>&& pred)
+  explicit Predictor(std::unique_ptr<PaddlePredictor>&& pred)
       : predictor_(std::move(pred)) {}
 
   ///
@@ -186,7 +184,7 @@ class PD_INFER_DECL Predictor {
   /// type, the second param is output var name of the op, and the third
   /// parameter is output tensor with the var name.
   ///
-  void RegisterOutputHook(const Exp_OutputHookFunc& hookfunc);
+  void RegisterOutputHook(const OutputHookFunc& hookfunc);
 
   ///
   /// \brief Get the execution stream on devices with a concept of stream,
@@ -197,7 +195,7 @@ class PD_INFER_DECL Predictor {
   void* GetExecStream() const;
 
  private:
-  std::unique_ptr<paddle::PaddlePredictor> predictor_;
+  std::unique_ptr<PaddlePredictor> predictor_;
   friend class paddle_infer::experimental::InternalUtils;
 };
 

@@ -33,7 +33,7 @@
 /// \since 1.7
 
 /// \namespace paddle
-namespace paddle {
+namespace paddle_infer {
 
 /// \class PaddlePassBuilder
 /// \brief This class build passes based on vector<string> input. It is part of
@@ -358,4 +358,4 @@ PD_INFER_DECL extern const std::vector<std::string> kCINNCompilerPasses;
 PD_INFER_DECL extern const std::vector<std::string> kGpuLowerPrecisionPasses;
 PD_INFER_DECL extern const std::vector<std::string> kTrtLowerPrecisionPasses;
 
-}  // namespace paddle
+}  // namespace paddle_infer

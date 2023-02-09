@@ -43,7 +43,7 @@
 #include "paddle_mkldnn_quantizer_config.h"  // NOLINT
 #endif
 
-namespace paddle {
+namespace paddle_infer {
 
 class AnalysisPredictor;
 struct MkldnnQuantizerConfig;
@@ -979,9 +979,6 @@ struct PD_INFER_DECL AnalysisConfig {
   /// \return bool Whether the AnalysisConfig is valid.
   ///
   bool is_valid() const { return is_valid_; }
-
-  friend class ::paddle::AnalysisPredictor;
-
   ///
   /// \brief Get a pass builder for customize the passes in IR analysis phase.
   /// NOTE: Just for developer, not an official API, easy to be broken.
@@ -1009,6 +1006,10 @@ struct PD_INFER_DECL AnalysisConfig {
   }
 
   const DistConfig& dist_config() const { return dist_config_; }
+
+  int trt_engine_memory_sharing_identifier() const {
+    return trt_engine_memory_sharing_identifier_;
+  }
 
   ///
   /// \brief Set a list of operators that do not support mixed precision. This
@@ -1251,7 +1252,6 @@ struct PD_INFER_DECL AnalysisConfig {
   // So we release the memory when the predictor is set up.
   mutable bool is_valid_{true};
   std::string opt_cache_dir_;
-  friend class paddle_infer::experimental::InternalUtils;
 
   // fleet exe related
   DistConfig dist_config_{};
@@ -1262,6 +1262,9 @@ struct PD_INFER_DECL AnalysisConfig {
   // PrepareProgram(). So we add this flag to control the process.
   bool apply_optim_{false};
   bool skip_load_params_{false};
+
+  friend class AnalysisPredictor;
+  friend class experimental::InternalUtils;
 };
 
-}  // namespace paddle
+}  // namespace paddle_infer

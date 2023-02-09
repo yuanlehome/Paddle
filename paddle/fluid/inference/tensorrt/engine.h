@@ -54,6 +54,7 @@ class PluginTensorRT;
 
 using FluidDT = framework::proto::VarType_Type;
 using TRT_DT = nvinfer1::DataType;
+using paddle_infer::AnalysisConfig;
 
 namespace {  // NOLINT
 
@@ -175,7 +176,7 @@ nvinfer1::Dims Vec2TRT_Dims(const std::vector<T>& shape,
 }
 }  // namespace
 
-class TRTInt8Calibrator;
+struct TRTInt8Calibrator;
 
 /*
  * TensorRT Engine.

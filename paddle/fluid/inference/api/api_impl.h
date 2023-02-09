@@ -34,10 +34,12 @@ limitations under the License. */
 #include "paddle/phi/core/ddim.h"
 
 namespace paddle {
-
 namespace framework {
 class Scope;
 }  // namespace framework
+}  // namespace paddle
+
+namespace paddle_infer {
 
 class NativePaddlePredictor : public PaddlePredictor {
  public:
@@ -45,7 +47,7 @@ class NativePaddlePredictor : public PaddlePredictor {
       : config_(config) {}
 
   // will only create sub scope if have global scope
-  bool Init(std::shared_ptr<framework::Scope> parent_scope);
+  bool Init(std::shared_ptr<paddle::framework::Scope> parent_scope);
 
   bool Run(const std::vector<PaddleTensor> &inputs,
            std::vector<PaddleTensor> *output_data,
@@ -55,34 +57,36 @@ class NativePaddlePredictor : public PaddlePredictor {
 
   ~NativePaddlePredictor() override;
 
-  framework::Scope *scope() { return sub_scope_ ? sub_scope_ : scope_.get(); }
+  paddle::framework::Scope *scope() {
+    return sub_scope_ ? sub_scope_ : scope_.get();
+  }
 
  protected:
   bool SetFeed(const std::vector<PaddleTensor> &input_datas,
-               framework::Scope *scope);
+               paddle::framework::Scope *scope);
   bool GetFetch(std::vector<PaddleTensor> *output_data,
-                framework::Scope *scope);
+                paddle::framework::Scope *scope);
   template <typename T>
   void GetFetchOne(const phi::DenseTensor &fetchs, PaddleTensor *output_data);
   void PrepareFeedFetch();
 
   NativeConfig config_;
-  platform::Place place_;
-  std::unique_ptr<framework::Executor> executor_;
-  std::shared_ptr<framework::Scope> scope_;
-  std::unique_ptr<framework::ExecutorPrepareContext> ctx_;
-  std::unique_ptr<framework::ProgramDesc> inference_program_;
-  std::vector<framework::OpDesc *> feeds_;
+  paddle::platform::Place place_;
+  std::unique_ptr<paddle::framework::Executor> executor_;
+  std::shared_ptr<paddle::framework::Scope> scope_;
+  std::unique_ptr<paddle::framework::ExecutorPrepareContext> ctx_;
+  std::unique_ptr<paddle::framework::ProgramDesc> inference_program_;
+  std::vector<paddle::framework::OpDesc *> feeds_;
   std::map<std::string, size_t> feed_names_;
-  std::vector<framework::OpDesc *> fetchs_;
+  std::vector<paddle::framework::OpDesc *> fetchs_;
   // Memory buffer for feed inputs. The temporary LoDTensor will cause serious
   // concurrency problems, wrong results and memory leak, so cache them.
   std::vector<phi::DenseTensor> feed_tensors_;
   // Do not use unique_ptr, use parent scope to delete
-  framework::Scope *sub_scope_{nullptr};
-  details::TensorArrayBatchCleaner tensor_array_batch_cleaner_;
+  paddle::framework::Scope *sub_scope_{nullptr};
+  paddle::details::TensorArrayBatchCleaner tensor_array_batch_cleaner_;
   // A mutex to make Clone thread safe.
   std::mutex clone_mutex_;
 };
 
-}  // namespace paddle
+}  // namespace paddle_infer

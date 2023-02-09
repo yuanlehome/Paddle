@@ -103,6 +103,7 @@ void OutputProcess(framework::ir::Graph *graph,
 }  // namespace
 
 using framework::ir::Node;
+using paddle_infer::AnalysisConfig;
 
 void analysis::TensorRtSubgraphPass::ApplyImpl(
     framework::ir::Graph *graph) const {

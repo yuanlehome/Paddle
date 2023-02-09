@@ -16,6 +16,7 @@
 
 #include "paddle/fluid/framework/lod_tensor.h"
 #include "paddle/fluid/framework/scope.h"
+#include "paddle/fluid/inference/api/paddle_api.h"
 #include "paddle/fluid/memory/memcpy.h"
 #include "paddle/fluid/platform/place.h"
 #include "paddle/phi/common/data_type.h"
@@ -44,7 +45,7 @@ namespace inference {
 namespace tensorrt {
 class TRTCalibratorEngine;
 class TRTCalibratorEngineManager;
-class TRTInt8Calibrator;
+struct TRTInt8Calibrator;
 }  // namespace tensorrt
 template <typename T>
 struct Singleton;
@@ -60,6 +61,7 @@ using inference::tensorrt::TensorRTEngine;
 using inference::tensorrt::TRTCalibratorEngine;
 using inference::tensorrt::TRTCalibratorEngineManager;
 using inference::tensorrt::TRTInt8Calibrator;
+using paddle_infer::AnalysisConfig;
 
 static void RuntimeStaticShapeCheck(std::vector<int64_t> runtime_input_shape,
                                     std::vector<int64_t> model_input_shape) {

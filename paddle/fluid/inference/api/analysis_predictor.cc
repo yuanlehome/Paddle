@@ -93,22 +93,23 @@
 #endif
 
 namespace paddle {
+namespace inference {
 
-using inference::Singleton;
+using paddle::inference::Singleton;
 #ifdef PADDLE_WITH_TENSORRT
-using inference::tensorrt::TRTCalibratorEngine;
-using inference::tensorrt::TRTCalibratorEngineManager;
-using inference::tensorrt::TRTInt8Calibrator;
+using paddle::inference::tensorrt::TRTCalibratorEngine;
+using paddle::inference::tensorrt::TRTCalibratorEngineManager;
+using paddle::inference::tensorrt::TRTInt8Calibrator;
 #endif
 
 int AnalysisPredictor::clone_num_ = 1;
 
 namespace {
-bool IsPersistable(const framework::VarDesc *var) {
+bool IsPersistable(const paddle::framework::VarDesc *var) {
   if (var->Persistable() &&
-      var->GetType() != framework::proto::VarType::FEED_MINIBATCH &&
-      var->GetType() != framework::proto::VarType::FETCH_LIST &&
-      var->GetType() != framework::proto::VarType::RAW) {
+      var->GetType() != paddle::framework::proto::VarType::FEED_MINIBATCH &&
+      var->GetType() != paddle::framework::proto::VarType::FETCH_LIST &&
+      var->GetType() != paddle::framework::proto::VarType::RAW) {
     return true;
   }
   return false;
@@ -156,8 +157,8 @@ phi::Backend ConvertBackend(paddle_infer::PlaceType backend) {
 
 bool PaddleTensorToLoDTensor(const PaddleTensor &pt,
                              phi::DenseTensor *t,
-                             const platform::Place &place) {
-  framework::DDim ddim = phi::make_ddim(pt.shape);
+                             const phi::Place &place) {
+  paddle::framework::DDim ddim = phi::make_ddim(pt.shape);
   void *input_ptr;
   if (pt.dtype == PaddleDType::INT64) {
     input_ptr = t->mutable_data<int64_t>(ddim, place);
@@ -166,7 +167,7 @@ bool PaddleTensorToLoDTensor(const PaddleTensor &pt,
   } else if (pt.dtype == PaddleDType::INT32) {
     input_ptr = t->mutable_data<int32_t>(ddim, place);
   } else if (pt.dtype == PaddleDType::FLOAT16) {
-    input_ptr = t->mutable_data<float16>(ddim, place);
+    input_ptr = t->mutable_data<phi::dtype::float16>(ddim, place);
   } else {
     LOG(ERROR) << "unsupported feed type " << pt.dtype;
     return false;
@@ -192,13 +193,13 @@ bool PaddleTensorToLoDTensor(const PaddleTensor &pt,
             "The data contained in the input PaddleTensor had wrong length."));
   }
 
-  if (platform::is_cpu_place(place)) {
+  if (paddle::platform::is_cpu_place(place)) {
     // TODO(panyx0718): Init LoDTensor from existing memcpy to save a copy.
     if (input_ptr != nullptr) {
       std::memcpy(
           static_cast<void *>(input_ptr), pt.data.data(), pt.data.length());
     }
-  } else if (platform::is_ipu_place(place)) {
+  } else if (paddle::platform::is_ipu_place(place)) {
 #ifdef PADDLE_WITH_IPU
     std::memcpy(
         static_cast<void *>(input_ptr), pt.data.data(), pt.data.length());
@@ -206,26 +207,27 @@ bool PaddleTensorToLoDTensor(const PaddleTensor &pt,
     PADDLE_THROW(paddle::platform::errors::Fatal(
         "Not compile with WITH_IPU, should not reach here."));
 #endif
-  } else if (platform::is_gpu_place(place)) {
-    PADDLE_ENFORCE_EQ(platform::is_xpu_place(place),
+  } else if (paddle::platform::is_gpu_place(place)) {
+    PADDLE_ENFORCE_EQ(paddle::platform::is_xpu_place(place),
                       false,
-                      platform::errors::InvalidArgument(
+                      paddle::platform::errors::InvalidArgument(
                           "Only one choice can be made between CPU and XPU."));
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
-    platform::DeviceContextPool &pool = platform::DeviceContextPool::Instance();
+    paddle::platform::DeviceContextPool &pool =
+        paddle::platform::DeviceContextPool::Instance();
     auto *dev_ctx = static_cast<const phi::GPUContext *>(pool.Get(place));
     auto dst_gpu_place = place;
-    memory::Copy(dst_gpu_place,
-                 static_cast<void *>(input_ptr),
-                 platform::CPUPlace(),
-                 pt.data.data(),
-                 pt.data.length(),
-                 dev_ctx->stream());
+    paddle::memory::Copy(dst_gpu_place,
+                         static_cast<void *>(input_ptr),
+                         paddle::platform::CPUPlace(),
+                         pt.data.data(),
+                         pt.data.length(),
+                         dev_ctx->stream());
 #else
     PADDLE_THROW(paddle::platform::errors::Fatal(
         "Not compile with CUDA, should not reach here."));
 #endif
-  } else if (platform::is_xpu_place(place)) {
+  } else if (paddle::platform::is_xpu_place(place)) {
 #ifdef PADDLE_WITH_XPU
     auto dst_xpu_place = place;
     memory::Copy(dst_xpu_place,
@@ -242,7 +244,7 @@ bool PaddleTensorToLoDTensor(const PaddleTensor &pt,
         "The analysis predictor supports CPU, GPU and XPU now."));
   }
   // TODO(Superjomn) Low performance, need optimization for heavy LoD copy.
-  framework::LoD lod;
+  paddle::framework::LoD lod;
   for (auto &level : pt.lod) {
     lod.emplace_back(level);
   }
@@ -251,14 +253,15 @@ bool PaddleTensorToLoDTensor(const PaddleTensor &pt,
 }
 
 bool AnalysisPredictor::Init(
-    const std::shared_ptr<framework::Scope> &parent_scope,
-    const std::shared_ptr<framework::ProgramDesc> &program) {
+    const std::shared_ptr<paddle::framework::Scope> &parent_scope,
+    const std::shared_ptr<paddle::framework::ProgramDesc> &program) {
   VLOG(3) << "Predictor::init()";
   if (config_.with_profile_) {
     LOG(WARNING) << "Profiler is activated, which might affect the performance";
-    auto tracking_device = config_.use_gpu() ? platform::ProfilerState::kAll
-                                             : platform::ProfilerState::kCPU;
-    platform::EnableProfiler(tracking_device);
+    auto tracking_device = config_.use_gpu()
+                               ? paddle::platform::ProfilerState::kAll
+                               : paddle::platform::ProfilerState::kCPU;
+    paddle::platform::EnableProfiler(tracking_device);
   } else {
     VLOG(2) << "Profiler is deactivated, and no profiling report will be "
                "generated.";
@@ -306,7 +309,7 @@ bool AnalysisPredictor::Init(
     // then fallback.
     auto global_stream =
         static_cast<phi::GPUContext *>(
-            platform::DeviceContextPool::Instance().Get(place_))
+            paddle::platform::DeviceContextPool::Instance().Get(place_))
             ->stream();
     if (predictor_stream_ != global_stream) {
       InitResourceManager(predictor_stream_);
@@ -314,7 +317,7 @@ bool AnalysisPredictor::Init(
     }
   }
 #endif
-  inference::DisplayMemoryInfo(place_, "Init predictor");
+  paddle::inference::DisplayMemoryInfo(place_, "Init predictor");
   return true;
 }
 
@@ -322,7 +325,7 @@ void AnalysisPredictor::InitPlace() {
   if (config_.use_gpu()) {
     PADDLE_ENFORCE_EQ(config_.use_xpu(),
                       false,
-                      platform::errors::InvalidArgument(
+                      paddle::platform::errors::InvalidArgument(
                           "Only one choice can be made between CPU and XPU."));
     place_ = paddle::platform::CUDAPlace(config_.gpu_device_id());
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
@@ -341,7 +344,7 @@ void AnalysisPredictor::InitPlace() {
       // model.
       place_ = paddle::platform::CPUPlace();
 #else
-      PADDLE_THROW(platform::errors::Unavailable(
+      PADDLE_THROW(paddle::platform::errors::Unavailable(
           "You tried to use an XPU lite engine, but Paddle was not compiled "
           "with it."));
 #endif  // LITE_SUBGRAPH_WITH_XPU
@@ -349,7 +352,7 @@ void AnalysisPredictor::InitPlace() {
 #ifdef PADDLE_WITH_XPU
       place_ = paddle::platform::XPUPlace(config_.xpu_device_id());
 #else
-      PADDLE_THROW(platform::errors::Unavailable(
+      PADDLE_THROW(paddle::platform::errors::Unavailable(
           "You tried to use XPU forward propagation (inference without lite "
           "engine), but Paddle was not compiled "
           "with WITH_XPU."));
@@ -359,7 +362,7 @@ void AnalysisPredictor::InitPlace() {
 #ifdef PADDLE_WITH_ASCEND_CL
     place_ = paddle::platform::NPUPlace(config_.npu_device_id());
 #else
-    PADDLE_THROW(platform::errors::Unavailable(
+    PADDLE_THROW(paddle::platform::errors::Unavailable(
         "You tried to use NPU forward propagation, but Paddle was not compiled "
         "with WITH_ASCEND_CL."));
 #endif
@@ -367,23 +370,23 @@ void AnalysisPredictor::InitPlace() {
     if (config_.lite_engine_enabled()) {
       place_ = paddle::platform::CPUPlace();
 #ifndef LITE_SUBGRAPH_WITH_NNADAPTER
-      PADDLE_THROW(
-          platform::errors::Unavailable("You tried to use an NNAdapter lite "
-                                        "engine, but Paddle was not compiled "
-                                        "with it."));
+      PADDLE_THROW(paddle::platform::errors::Unavailable(
+          "You tried to use an NNAdapter lite "
+          "engine, but Paddle was not compiled "
+          "with it."));
 #endif  // LITE_SUBGRAPH_WITH_NNADAPTER
     } else {
-      PADDLE_THROW(
-          platform::errors::Unavailable("You tried to use NNadapter forward "
-                                        "propagation (inference without lite "
-                                        "engine), but Paddle was not compiled "
-                                        "with LITE_WITH_NNADAPTER."));
+      PADDLE_THROW(paddle::platform::errors::Unavailable(
+          "You tried to use NNadapter forward "
+          "propagation (inference without lite "
+          "engine), but Paddle was not compiled "
+          "with LITE_WITH_NNADAPTER."));
     }
   } else if (config_.use_ipu()) {
 #ifdef PADDLE_WITH_IPU
     place_ = paddle::platform::IPUPlace();
 #else
-    PADDLE_THROW(platform::errors::Unavailable(
+    PADDLE_THROW(paddle::platform::errors::Unavailable(
         "You tried to use IPU forward propagation, but Paddle was not compiled "
         "with WITH_IPU."));
 #endif
@@ -404,7 +407,7 @@ void AnalysisPredictor::InitPlace() {
 void AnalysisPredictor::InitResourceManager(void *stream) {
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
   predictor_stream_ =
-      ResourceManager::Instance().InitGPUResource(place_, stream);
+      paddle::ResourceManager::Instance().InitGPUResource(place_, stream);
 #endif
 }
 
@@ -415,27 +418,28 @@ void AnalysisPredictor::InitDeviceContexts() {
     device_contexts_.emplace(
         place_, std::async(std::launch::deferred, [=] {
           auto *gpu_resource =
-              ResourceManager::Instance().GetGPUResource(predictor_stream_);
-          auto *gpu_context = new InferGPUContext(place_);
+              paddle::ResourceManager::Instance().GetGPUResource(
+                  predictor_stream_);
+          auto *gpu_context = new paddle::InferGPUContext(place_);
           gpu_context->SetAllocator(
-              memory::allocation::AllocatorFacade::Instance()
+              paddle::memory::allocation::AllocatorFacade::Instance()
                   .GetAllocator(place_, gpu_resource->GetStream())
                   .get());
           gpu_context->SetPinnedAllocator(
-              memory::allocation::AllocatorFacade::Instance()
+              paddle::memory::allocation::AllocatorFacade::Instance()
                   .GetAllocator(paddle::platform::CUDAPinnedPlace())
                   .get());
           gpu_context->SetHostAllocator(
-              memory::allocation::AllocatorFacade::Instance()
-                  .GetAllocator(platform::CPUPlace())
+              paddle::memory::allocation::AllocatorFacade::Instance()
+                  .GetAllocator(paddle::platform::CPUPlace())
                   .get());
           gpu_context->SetZeroAllocator(
-              memory::allocation::AllocatorFacade::Instance()
+              paddle::memory::allocation::AllocatorFacade::Instance()
                   .GetZeroAllocator(place_)
                   .get());
           gpu_context->SetHostZeroAllocator(
-              memory::allocation::AllocatorFacade::Instance()
-                  .GetZeroAllocator(platform::CPUPlace())
+              paddle::memory::allocation::AllocatorFacade::Instance()
+                  .GetZeroAllocator(paddle::platform::CPUPlace())
                   .get());
           gpu_context->SetGenerator(
               framework::DefaultCUDAGenerator(place_.GetDeviceId()).get());
@@ -468,7 +472,7 @@ void AnalysisPredictor::InitDeviceContexts() {
                   << reinterpret_cast<void *>(gpu_resource->GetStream())
                   << ", allotor ptr is "
                   << reinterpret_cast<void *>(
-                         memory::allocation::AllocatorFacade::Instance()
+                         paddle::memory::allocation::AllocatorFacade::Instance()
                              .GetAllocator(place_, gpu_resource->GetStream())
                              .get());
           return std::unique_ptr<phi::DeviceContext>(gpu_context);
@@ -511,11 +515,11 @@ const void *AnalysisPredictor::GetDeviceContexts() const {
 }
 
 bool AnalysisPredictor::PrepareScope(
-    const std::shared_ptr<framework::Scope> &parent_scope) {
+    const std::shared_ptr<paddle::framework::Scope> &parent_scope) {
   if (parent_scope) {
     PADDLE_ENFORCE_NOT_NULL(
         parent_scope,
-        platform::errors::PreconditionNotMet(
+        paddle::platform::errors::PreconditionNotMet(
             "Both program and parent_scope should be set in Clone mode."));
     scope_ = parent_scope;
     status_is_cloned_ = true;
@@ -1349,10 +1353,10 @@ void AnalysisPredictor::OptimizeInferenceProgram() {
                 PADDLE_GET_CONST(int, op_desc->GetAttr("predictor_id"));
             std::string engine_name =
                 engine_key + std::to_string(engine_predictor_id);
-            if (paddle::inference::Singleton<
+            if (inference::Singleton<
                     inference::tensorrt::TRTEngineManager>::Global()
                     .Has(engine_name)) {
-              paddle::inference::Singleton<
+              inference::Singleton<
                   inference::tensorrt::TRTEngineManager>::Global()
                   .DeleteKey(engine_name);
             }
@@ -1678,7 +1682,7 @@ AnalysisPredictor::GetOutputTypes() {
   return output_type;
 }
 
-std::unique_ptr<ZeroCopyTensor> AnalysisPredictor::GetInputTensor(
+std::unique_ptr<Tensor> AnalysisPredictor::GetInputTensor(
     const std::string &name) {
   framework::Scope *scope;
 #if defined(PADDLE_WITH_DISTRIBUTE) && defined(PADDLE_WITH_PSCORE)
@@ -2313,7 +2317,7 @@ void AnalysisPredictor::SaveOptimModel(const std::string &dir) {
   exe.Run(save_program, scope(), 0, true, true);
 }
 
-void AnalysisPredictor::RegisterOutputHook(const Exp_OutputHookFunc &hookfunc) {
+void AnalysisPredictor::RegisterOutputHook(const OutputHookFunc &hookfunc) {
   static std::once_flag register_hook_flag;
   std::call_once(register_hook_flag, [this] {
     executor_->RegisterOutputHook([this](framework::OperatorBase *op) {
@@ -2341,7 +2345,7 @@ std::unique_ptr<PaddlePredictor> CreatePaddlePredictor<AnalysisConfig>(
   return CreatePaddlePredictor<AnalysisConfig, PaddleEngineKind::kAnalysis>(
       config);
 }
-
+}  // namespace inference
 }  // namespace paddle
 
 #ifdef PADDLE_WITH_TENSORRT
@@ -2590,7 +2594,7 @@ void Predictor::ClearIntermediateTensor() {
 
 uint64_t Predictor::TryShrinkMemory() { return predictor_->TryShrinkMemory(); }
 
-void Predictor::RegisterOutputHook(const Exp_OutputHookFunc &hookfunc) {
+void Predictor::RegisterOutputHook(const OutputHookFunc &hookfunc) {
   predictor_->RegisterOutputHook(hookfunc);
 }
 

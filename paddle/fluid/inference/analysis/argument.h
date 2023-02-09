@@ -226,7 +226,7 @@ struct Argument {
                       std::vector<std::string>);
   DECL_ARGUMENT_FIELD(tensorrt_precision_mode,
                       TensorRtPrecisionMode,
-                      AnalysisConfig::Precision);
+                      paddle_infer::AnalysisConfig::Precision);
   DECL_ARGUMENT_FIELD(tensorrt_use_static_engine,
                       TensorRtUseStaticEngine,
                       bool);
@@ -263,7 +263,7 @@ struct Argument {
   DECL_ARGUMENT_FIELD(dlnne_use_calib_mode, DlnneUseCalibMode, bool);
   DECL_ARGUMENT_FIELD(dlnne_precision_mode,
                       DlnnePrecisionMode,
-                      AnalysisConfig::Precision);
+                      paddle_infer::AnalysisConfig::Precision);
 
   using dlnne_input_shape_type = std::map<std::string, std::vector<int64_t>>;
   DECL_ARGUMENT_FIELD(dlnne_input_shape_dict,
@@ -277,7 +277,7 @@ struct Argument {
   DECL_ARGUMENT_FIELD(lite_ops_filter, LiteOpsFilter, std::vector<std::string>);
   DECL_ARGUMENT_FIELD(lite_precision_mode,
                       LitePrecisionMode,
-                      AnalysisConfig::Precision);
+                      paddle_infer::AnalysisConfig::Precision);
   DECL_ARGUMENT_FIELD(lite_zero_copy, LiteZeroCopy, bool);
 
   DECL_ARGUMENT_FIELD(use_xpu, UseXpu, bool);

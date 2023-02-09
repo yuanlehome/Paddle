@@ -31,14 +31,14 @@
 #include "crypto/cipher.h"
 #include "paddle_infer_declare.h"  // NOLINT
 #include "paddle_tensor.h"         // NOLINT
-                                   /*! \namespace paddle
-                                    */
-namespace paddle {
 
-using PaddleDType = paddle_infer::DataType;
-using PaddlePlace = paddle_infer::PlaceType;
-using PaddleDataLayout = paddle_infer::DataLayout;
-using paddle_infer::Exp_OutputHookFunc;
+/*! \namespace paddle_infer
+ */
+namespace paddle_infer {
+
+using PaddleDType = DataType;
+using PaddlePlace = PlaceType;
+using PaddleDataLayout = DataLayout;
 
 /// \brief Memory manager for PaddleTensor.
 ///
@@ -155,50 +155,51 @@ struct PD_INFER_DECL PaddleTensor {
   std::string name;  ///<  variable name.
   std::vector<int> shape;
   PaddleBuf data;  ///<  blob of data.
-  PaddleDType dtype;
+  DataType dtype;
   std::vector<std::vector<size_t>> lod;  ///<  Tensor+LoD equals LoDTensor
 };
 
-/// \brief Represents an n-dimensional array of values.
-/// The ZeroCopyTensor is used to store the input or output of the network.
-/// Zero copy means that the tensor supports direct copy of host or device data
-/// to device,
-/// eliminating additional CPU copy. ZeroCopyTensor is only used in the
-/// AnalysisPredictor.
-/// It is obtained through PaddlePredictor::GetinputTensor()
-/// and PaddlePredictor::GetOutputTensor() interface.
+// /// \brief Represents an n-dimensional array of values.
+// /// The ZeroCopyTensor is used to store the input or output of the network.
+// /// Zero copy means that the tensor supports direct copy of host or device
+// data
+// /// to device,
+// /// eliminating additional CPU copy. ZeroCopyTensor is only used in the
+// /// AnalysisPredictor.
+// /// It is obtained through PaddlePredictor::GetinputTensor()
+// /// and PaddlePredictor::GetOutputTensor() interface.
 
-class PD_INFER_DECL ZeroCopyTensor : public paddle_infer::Tensor {
- public:
-  /// \brief Copy the host memory to tensor data.
-  /// It's usually used to set the input tensor data.
-  /// \param data The pointer of the data, from which the tensor will copy.
-  template <typename T>
-  void copy_from_cpu(const T* data) {
-    return CopyFromCpu(data);
-  }
+// class PD_INFER_DECL ZeroCopyTensor : public paddle_infer::Tensor {
+//  public:
+//   /// \brief Copy the host memory to tensor data.
+//   /// It's usually used to set the input tensor data.
+//   /// \param data The pointer of the data, from which the tensor will copy.
+//   template <typename T>
+//   void copy_from_cpu(const T* data) {
+//     return CopyFromCpu(data);
+//   }
 
-  /// \brief Experimental interface.
-  /// It's usually used to set the input tensor data with Strings data type.
-  /// \param data The pointer of the data, from which the tensor will copy.
-  void copy_strings_from_cpu(const paddle_infer::Strings* data) {
-    return CopyStringsFromCpu(data);
-  }
+//   /// \brief Experimental interface.
+//   /// It's usually used to set the input tensor data with Strings data type.
+//   /// \param data The pointer of the data, from which the tensor will copy.
+//   void copy_strings_from_cpu(const paddle_infer::Strings* data) {
+//     return CopyStringsFromCpu(data);
+//   }
 
-  /// \brief Copy the tensor data to the host memory.
-  /// It's usually used to get the output tensor data.
-  /// \param[out] data The tensor will copy the data to the address.
-  template <typename T>
-  void copy_to_cpu(T* data) {
-    return CopyToCpu(data);
-  }
+//   /// \brief Copy the tensor data to the host memory.
+//   /// It's usually used to get the output tensor data.
+//   /// \param[out] data The tensor will copy the data to the address.
+//   template <typename T>
+//   void copy_to_cpu(T* data) {
+//     return CopyToCpu(data);
+//   }
 
- private:
-  friend class AnalysisPredictor;
-  friend class ONNXRuntimePredictor;
-  explicit ZeroCopyTensor(void* scope, const void* device_contexts)
-      : paddle_infer::Tensor{scope, device_contexts} {}
-};
+//  private:
+//   friend class AnalysisPredictor;
+//   friend class ONNXRuntimePredictor;
+//   explicit ZeroCopyTensor(void* scope, const void* device_contexts)
+//       : paddle_infer::Tensor{scope, device_contexts} {}
+// };
 
 /// \brief A Predictor for executing inference on a model.
 /// Base class for AnalysisPredictor and NativePaddlePredictor.
@@ -234,9 +235,7 @@ class PD_INFER_DECL PaddlePredictor {
 
   /// \brief Get the input type of the model.
   /// \return A map contains all the input names and type defined in the model.
-  virtual std::map<std::string, paddle_infer::DataType> GetInputTypes() {
-    return {};
-  }
+  virtual std::map<std::string, DataType> GetInputTypes() { return {}; }
 
   /// \brief Used to get the name of the network output.
   /// Be inherited by AnalysisPredictor, Only used in ZeroCopy scenarios.
@@ -261,7 +260,7 @@ class PD_INFER_DECL PaddlePredictor {
   /// The name is obtained from the GetInputNames() interface.
   /// \param name The input tensor name.
   /// \return Return the corresponding input ZeroCopyTensor.
-  virtual std::unique_ptr<ZeroCopyTensor> GetInputTensor(
+  virtual std::unique_ptr<paddle_infer::Tensor> GetInputTensor(
       const std::string& name) {
     return nullptr;
   }
@@ -271,7 +270,7 @@ class PD_INFER_DECL PaddlePredictor {
   /// The name is obtained from the GetOutputNames() interface.
   /// \param name The output tensor name.
   /// \return Return the corresponding output ZeroCopyTensor.
-  virtual std::unique_ptr<ZeroCopyTensor> GetOutputTensor(
+  virtual std::unique_ptr<paddle_infer::Tensor> GetOutputTensor(
       const std::string& name) {
     return nullptr;
   }
@@ -311,7 +310,8 @@ class PD_INFER_DECL PaddlePredictor {
   /// type, the second param is output var name of the op, and the third
   /// parameter is output tensor with the var name.
   ///
-  virtual void RegisterOutputHook(const Exp_OutputHookFunc& hookfunc) {}
+  virtual void RegisterOutputHook(
+      const paddle_infer::OutputHookFunc& hookfunc) {}
 
   /// \brief Clone an existing predictor
   /// When using clone, the same network will be created,
@@ -442,16 +442,16 @@ PD_INFER_DECL std::unique_ptr<PaddlePredictor>
 CreatePaddlePredictor<AnalysisConfig, PaddleEngineKind::kONNXRuntime>(
     const AnalysisConfig& config);
 
-PD_INFER_DECL int PaddleDtypeSize(PaddleDType dtype);
+PD_INFER_DECL int PaddleDtypeSize(DataType dtype);
 
 PD_INFER_DECL std::string get_version();
 
 PD_INFER_DECL std::string UpdateDllFlag(const char* name, const char* value);
 
-PD_INFER_DECL std::shared_ptr<framework::Cipher> MakeCipher(
+PD_INFER_DECL std::shared_ptr<paddle::framework::Cipher> MakeCipher(
     const std::string& config_file);
 
-}  // namespace paddle
+}  // namespace paddle_infer
 
 // forward declation
 using cudaStream_t = struct CUstream_st*;
@@ -459,8 +459,8 @@ using hipStream_t = struct ihipStream_t*;
 
 namespace paddle_infer {
 class Predictor;
-class Tensor;
-using Config = paddle::AnalysisConfig;
+// class Tensor;
+using Config = AnalysisConfig;
 namespace experimental {
 // Unstable interface, may be modified or deleted in the future.
 class PD_INFER_DECL InternalUtils {
