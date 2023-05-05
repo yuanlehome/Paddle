@@ -246,11 +246,13 @@ void BuildPhiKernelContextAttr(const framework::OpDesc& op_desc,
 
 GenericPlugin::GenericPlugin(
     const paddle::framework::proto::OpDesc& proto_op_desc,
+    const phi::KernelSignature& signature,
     const InputOutPutVarInfo& in_out_info,
     bool with_fp16) {
   proto_op_desc_ = proto_op_desc;
   op_desc_ = std::move(framework::OpDesc(proto_op_desc_, nullptr));
   proto_op_desc_.SerializeToString(&op_meta_data_);
+  kernel_signature_ = signature;
   inputs_data_type_ = in_out_info.inputs_data_type;
   outputs_data_type_ = in_out_info.outputs_data_type;
   with_fp16_ = with_fp16;
@@ -258,18 +260,42 @@ GenericPlugin::GenericPlugin(
 
 GenericPlugin::GenericPlugin(
     const paddle::framework::proto::OpDesc& proto_op_desc,
+    const phi::KernelSignature& signature,
     const std::vector<int>& inputs_data_type,
     const std::vector<int>& outputs_data_type,
     bool with_fp16) {
   proto_op_desc_ = proto_op_desc;
   op_desc_ = std::move(framework::OpDesc(proto_op_desc_, nullptr));
   proto_op_desc_.SerializeToString(&op_meta_data_);
+  kernel_signature_ = signature;
   inputs_data_type_ = inputs_data_type;
   outputs_data_type_ = outputs_data_type;
   with_fp16_ = with_fp16;
 }
 
 GenericPlugin::GenericPlugin(void const* serial_data, size_t serial_length) {
+  DeserializeValue(&serial_data, &serial_length, &kernel_signature_.name);
+  size_t input_names_size = 0;
+  DeserializeValue(&serial_data, &serial_length, &input_names_size);
+  kernel_signature_.input_names.resize(input_names_size);
+  for (size_t i = 0; i < input_names_size; i++) {
+    DeserializeValue(
+        &serial_data, &serial_length, &kernel_signature_.input_names[i]);
+  }
+  size_t attr_names_size = 0;
+  DeserializeValue(&serial_data, &serial_length, &attr_names_size);
+  kernel_signature_.attr_names.resize(attr_names_size);
+  for (size_t i = 0; i < attr_names_size; i++) {
+    DeserializeValue(
+        &serial_data, &serial_length, &kernel_signature_.attr_names[i]);
+  }
+  size_t output_names_size = 0;
+  DeserializeValue(&serial_data, &serial_length, &output_names_size);
+  kernel_signature_.output_names.resize(output_names_size);
+  for (size_t i = 0; i < output_names_size; i++) {
+    DeserializeValue(
+        &serial_data, &serial_length, &kernel_signature_.output_names[i]);
+  }
   DeserializeValue(&serial_data, &serial_length, &inputs_data_type_);
   DeserializeValue(&serial_data, &serial_length, &outputs_data_type_);
   DeserializeValue(&serial_data, &serial_length, &with_fp16_);
@@ -297,13 +323,30 @@ int GenericPlugin::getNbInputs() const TRT_NOEXCEPT {
 }
 
 nvinfer1::IPluginV2DynamicExt* GenericPlugin::clone() const TRT_NOEXCEPT {
-  nvinfer1::IPluginV2DynamicExt* plugin = new GenericPlugin(
-      proto_op_desc_, inputs_data_type_, outputs_data_type_, with_fp16_);
+  nvinfer1::IPluginV2DynamicExt* plugin = new GenericPlugin(proto_op_desc_,
+                                                            kernel_signature_,
+                                                            inputs_data_type_,
+                                                            outputs_data_type_,
+                                                            with_fp16_);
   plugin->initialize();
   return plugin;
 }
 
 void GenericPlugin::serialize(void* buffer) const TRT_NOEXCEPT {
+  // kernel_signature_
+  SerializeValue(&buffer, kernel_signature_.name);
+  SerializeValue(&buffer, kernel_signature_.input_names.size());
+  for (size_t i = 0; i < kernel_signature_.input_names.size(); i++) {
+    SerializeValue(&buffer, kernel_signature_.input_names[i]);
+  }
+  SerializeValue(&buffer, kernel_signature_.attr_names.size());
+  for (size_t i = 0; i < kernel_signature_.attr_names.size(); i++) {
+    SerializeValue(&buffer, kernel_signature_.attr_names[i]);
+  }
+  SerializeValue(&buffer, kernel_signature_.output_names.size());
+  for (size_t i = 0; i < kernel_signature_.output_names.size(); i++) {
+    SerializeValue(&buffer, kernel_signature_.output_names[i]);
+  }
   // inputs_data_type_
   SerializeValue(&buffer, inputs_data_type_);
   // outputs_data_type_
@@ -373,23 +416,6 @@ nvinfer1::DataType GenericPlugin::getOutputDataType(
 int GenericPlugin::initialize() TRT_NOEXCEPT {
   std::string op_type = op_desc_.Type();
 
-  phi::KernelSignature phi_kernel_signature;
-  if (phi::OpUtilsMap::Instance().HasArgumentMappingFn(op_type)) {
-    const phi::ArgumentMappingFn* argument_mapping_func =
-        phi::OpUtilsMap::Instance().GetArgumentMappingFn(op_type);
-    PluginArgumentMappingContext argument_mapping_context(&op_desc_);
-    phi_kernel_signature = (*argument_mapping_func)(argument_mapping_context);
-  } else {
-    phi_kernel_signature =
-        phi::DefaultKernelSignatureMap::Instance().Get(op_type);
-  }
-
-  PADDLE_ENFORCE_EQ(
-      phi::KernelFactory::Instance().HasCompatiblePhiKernel(op_type),
-      true,
-      platform::errors::Fatal("%s has no compatible phi kernel!",
-                              op_type.c_str()));
-
   paddle::platform::DeviceContextPool& pool =
       paddle::platform::DeviceContextPool::Instance();
   platform::CUDAPlace place(platform::GetCurrentDeviceId());
@@ -404,14 +430,14 @@ int GenericPlugin::initialize() TRT_NOEXCEPT {
     auto nv_dtype = PhiType2NvType(precision_type);
     phi_kernels_[nv_dtype].reset(
         new phi::Kernel(phi::KernelFactory::Instance().SelectKernel(
-            phi_kernel_signature.name, phi_kernel_key)));
+            kernel_signature_.name, phi_kernel_key)));
 
     if (phi_kernel_contexts_.find(nv_dtype) == phi_kernel_contexts_.end() ||
         !phi_kernel_contexts_[nv_dtype]) {
       phi_kernel_contexts_[nv_dtype].reset(new phi::KernelContext(dev_ctx));
       BuildPhiKernelContextAttr(op_desc_,
                                 phi_kernel_contexts_[nv_dtype].get(),
-                                phi_kernel_signature,
+                                kernel_signature_,
                                 phi_kernels_[nv_dtype].get());
     }
   }
@@ -419,7 +445,7 @@ int GenericPlugin::initialize() TRT_NOEXCEPT {
                         phi_kernels_[nvinfer1::DataType::kHALF]->IsValid(),
                     true,
                     platform::errors::Fatal("%s phi kernel is invalid!.",
-                                            phi_kernel_signature.name));
+                                            kernel_signature_.name));
 
   if (!dense_tensor_inputs_)
     dense_tensor_inputs_ = new std::vector<phi::DenseTensor>(getNbInputs());
@@ -472,7 +498,7 @@ int GenericPlugin::enqueue(const nvinfer1::PluginTensorDesc* input_desc,
                            cudaStream_t stream) TRT_NOEXCEPT {
   platform::CUDAPlace place(platform::GetCurrentDeviceId());
 
-  // [TODO]now generic plugin do not support INT8 precision
+  // TODO(inference): generic plugin do not support INT8 precision now.
   auto protoType2PhiType =
       [&](int proto_type,
           nvinfer1::DataType nv_dtype) -> std::pair<phi::DataType, int> {
