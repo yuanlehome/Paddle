@@ -1848,11 +1848,9 @@ struct SimpleOpTypeSetTeller : public Teller {
         return false;
       }
 
-#if IS_TRT_VERSION_LT(7000)
-      if (!with_dynamic_shape) {
-        // TODO(inference): fix trt6 static plugin error.
-        VLOG(3) << "prelu static plugin in trt6 has bug.";
-        return false;
+#if IS_TRT_VERSION_LT(8000)
+      if (with_dynamic_shape && x_shape.size() == 0) {
+        return false;  // not supported 0 dim.
       }
 #endif
     }

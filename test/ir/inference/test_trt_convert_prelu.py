@@ -18,7 +18,7 @@ from typing import Any, Dict, List
 
 import numpy as np
 from program_config import ProgramConfig, TensorConfig
-from trt_layer_auto_scan_test import SkipReasons, TrtLayerAutoScanTest
+from trt_layer_auto_scan_test import TrtLayerAutoScanTest
 
 import paddle.inference as paddle_infer
 
@@ -174,23 +174,7 @@ class TrtConvertPreluTest(TrtLayerAutoScanTest):
             attrs, True
         ), (1e-3, 1e-3)
 
-    def add_skip_trt_case(self):
-        ver = paddle_infer.get_trt_compile_version()
-        if ver[0] * 1000 + ver[1] * 100 + ver[0] * 10 < 7000:
-
-            def teller(program_config, predictor_config):
-                if not predictor_config.tensorrt_dynamic_shape_enabled():
-                    return True
-                return False
-
-            self.add_skip_case(
-                teller,
-                SkipReasons.TRT_NOT_IMPLEMENTED,
-                "Need to repair the case: the output of GPU and tensorrt has diff in trt6, the prelu static plugin has bug.",
-            )
-
     def test(self):
-        self.add_skip_trt_case()
         self.run_test()
 
 
