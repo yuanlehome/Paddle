@@ -271,10 +271,15 @@ Operation *Operation::GetParentOp() const {
 }
 Program *Operation::GetParentProgram() {
   auto op = this;
+  Operation *parent_op = op->GetParentOp();
   while (Operation *parent_op = op->GetParentOp()) {
     op = parent_op;
   }
   ModuleOp module_op = op->dyn_cast<ModuleOp>();
+  if (module_op){
+    auto pro = module_op.program();
+    return pro;
+  }
   return module_op ? module_op.program() : nullptr;
 }
 void Operation::SetParent(Block *parent, const Block::Iterator &position) {

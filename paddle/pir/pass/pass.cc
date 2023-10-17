@@ -66,7 +66,6 @@ bool detail::PassAdaptor::RunPipeline(const PassManager& pm,
   if (instrumentor) {
     instrumentor->RunBeforePipeline(op);
   }
-
   for (auto& pass : pm.passes()) {
     if (pass->CanApplyOn(op)) {
       if (!RunPass(pass.get(), op, am, opt_level, verify)) {
@@ -79,11 +78,10 @@ bool detail::PassAdaptor::RunPipeline(const PassManager& pm,
     instrumentor->RunAfterPipeline(op);
   }
 
-  // Apply pass manager on all nested ir.
+  // Apply pass mangitager on all nested ir.
   if (!RunPass(pm.pass_adaptor_.get(), op, am, opt_level, verify)) {
     return false;
   }
-
   return true;
 }
 
@@ -95,9 +93,7 @@ bool detail::PassAdaptor::RunPass(Pass* pass,
   if (opt_level < pass->pass_info().opt_level) return true;
 
   pass->pass_state_ = PassExecutionState(op, am);
-
   PassInstrumentor* instrumentor = am.GetPassInstrumentor();
-
   if (auto* adaptor = dynamic_cast<PassAdaptor*>(pass)) {
     adaptor->Run(op, opt_level, verify);
   } else {
@@ -105,14 +101,12 @@ bool detail::PassAdaptor::RunPass(Pass* pass,
     pass->Run(op);
     if (instrumentor) instrumentor->RunAfterPass(pass, op);
   }
-
   bool pass_failed = pass->pass_state().pass_failed;
 
   if (!pass_failed && verify) {
     bool verify_recursively = !dynamic_cast<PassAdaptor*>(pass);
     pir::Verify(op, verify_recursively);
   }
-
   return !pass_failed;
 }
 
@@ -134,7 +128,7 @@ bool PassManager::Run(Program* program) {
 bool PassManager::Run(Operation* op) {
   // Construct a analysis manager for the pipeline.
   AnalysisManagerHolder am(op, instrumentor_.get());
-
+  
   return detail::PassAdaptor::RunPipeline(*this, op, am, opt_level_, verify_);
 }
 

@@ -30,6 +30,7 @@ class DrrPatternBase {
 
   std::unique_ptr<DrrRewritePattern<DrrPattern>> Build(
       pir::IrContext* ir_context, pir::PatternBenefit benefit = 1) const {
+    VLOG(6) << "Build a new DrrRewritePattern.";
     DrrPatternContext drr_context;
     this->operator()(&drr_context);
     return std::make_unique<DrrRewritePattern<DrrPattern>>(

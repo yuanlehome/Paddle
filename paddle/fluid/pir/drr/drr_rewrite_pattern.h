@@ -55,6 +55,7 @@ class DrrRewritePattern : public pir::RewritePattern {
 
   bool MatchAndRewrite(pir::Operation* op,
                        PatternRewriter& rewriter) const override {  // NOLINT
+    VLOG(6) << "MatchAndRewrite Start: op(" << op->name() << ")";
     std::shared_ptr<MatchContextImpl> src_match_ctx =
         std::make_shared<MatchContextImpl>();
     if (PatternGraphMatch(op, src_match_ctx.get())) {
