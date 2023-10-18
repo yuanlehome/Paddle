@@ -145,6 +145,7 @@ class Op : public OpBase {
     if (op && op->info().id() == TypeId::get<ConcreteOp>()) {
       return ConcreteOp(op);
     }
+    VLOG(6) << "op is nullptr or id != TypeId, concreate op with nullptr";
     return ConcreteOp(nullptr);
   }
 

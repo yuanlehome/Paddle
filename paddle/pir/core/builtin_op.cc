@@ -66,6 +66,7 @@ Block *ModuleOp::block() {
 }
 
 ModuleOp ModuleOp::Create(IrContext *context, Program *pointer) {
+  VLOG(6) << "Create Operation and cast it to ModuleOp";
   pir::OpInfo info = context->GetRegisteredOpInfo(name());
   OperationArgument argument(info);
   argument.AddRegion(nullptr);
