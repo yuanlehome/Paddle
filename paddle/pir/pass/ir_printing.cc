@@ -30,6 +30,7 @@ void PrintIR(Operation *op, bool print_module, std::ostream &os) {
     op->Print(os << "\n");
     return;
   }
+  
   auto *program = op->GetParentProgram();
   program->Print(os);
 }
