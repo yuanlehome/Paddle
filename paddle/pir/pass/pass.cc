@@ -112,7 +112,6 @@ bool detail::PassAdaptor::RunPass(Pass* pass,
     bool verify_recursively = !dynamic_cast<PassAdaptor*>(pass);
     pir::Verify(op, verify_recursively);
   }
-  
   return !pass_failed;
 }
 
@@ -134,7 +133,6 @@ bool PassManager::Run(Program* program) {
 bool PassManager::Run(Operation* op) {
   // Construct a analysis manager for the pipeline.
   AnalysisManagerHolder am(op, instrumentor_.get());
-  
   return detail::PassAdaptor::RunPipeline(*this, op, am, opt_level_, verify_);
 }
 
