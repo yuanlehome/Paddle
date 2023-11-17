@@ -51,4 +51,5 @@ __all__ = [
     "fused_layer_norm",
     "masked_multihead_attention",
     "write_cache_kv",
+    "rebuild_padding",
 ]
