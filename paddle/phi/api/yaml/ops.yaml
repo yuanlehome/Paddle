@@ -1030,6 +1030,14 @@
     data_type : dtype
     backend : place
 
+- op : fused_get_rotary_embedding
+  args : (Tensor input_ids, Tensor position_ids, Tensor head_dim_shape_tensor, int prompt_num, bool use_neox)
+  output : Tensor (rotary_embedding)
+  infer_meta :
+    func : FusedGetRotaryEmbeddingInferMeta
+  kernel :
+    func : fused_get_rotary_embedding
+
 - op : gather
   args : (Tensor x, Tensor index, Scalar axis=0)
   output : Tensor(out)
@@ -1093,6 +1101,15 @@
     func : generate_proposals
     data_type : anchors
   optional : rpn_rois_num
+
+- op : get_padding_offset
+  args : (Tensor input_ids, Tensor cum_offsets, Tensor token_num, Tensor seq_len)
+  output : Tensor(x_remove_padding), Tensor(cum_offsets_out), Tensor(padding_offset)
+  infer_meta :
+    func : GetPaddingOffsetInferMeta
+  kernel :
+    func : get_padding_offset
+    data_type : input_ids
 
 - op : grid_sample
   args : (Tensor x, Tensor grid, str mode = "bilinear", str padding_mode = "zeros", bool align_corners = true)
@@ -2041,6 +2058,15 @@
   inplace : (arr -> out)
   backward : put_along_axis_grad
 
+- op : qkv_transpose_split
+  args : (Tensor qkv, Tensor padding_offset, Tensor seq_lens, Tensor input_ids, int num_head, int head_size)
+  output : Tensor (q_out), Tensor(k_out), Tensor(v_out)
+  infer_meta :
+    func : QkvTransposeSplitInferMeta
+  kernel :
+    func : qkv_transpose_split
+    data_type : qkv
+
 - op : qr
   args : (Tensor x, str mode = "reduced")
   output : Tensor(q), Tensor(r)
@@ -2889,20 +2915,3 @@
   optional : gt_score
   intermediate : objectness_mask, gt_match_mask
   backward : yolo_loss_grad
-
-- op : qkv_transpose_split
-  args : (Tensor qkv, Tensor padding_offset, Tensor seq_lens, Tensor input_ids, int num_head, int head_size)
-  output : Tensor (q_out), Tensor(k_out), Tensor(v_out)
-  infer_meta :
-    func : QkvTransposeSplitInferMeta
-  kernel :
-    func : qkv_transpose_split
-    data_type : qkv
-
-- op : fused_get_rotary_embedding
-  args : (Tensor input_ids, Tensor position_ids, Tensor head_dim_shape_tensor, int prompt_num, bool use_neox)
-  output : Tensor (rotary_embedding)
-  infer_meta :
-    func : FusedGetRotaryEmbeddingInferMeta
-  kernel :
-    func : fused_get_rotary_embedding

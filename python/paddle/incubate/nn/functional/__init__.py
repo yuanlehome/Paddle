@@ -35,6 +35,7 @@ from .write_cache_kv import write_cache_kv
 from .rebuild_padding import rebuild_padding
 from .qkv_transpose_split import qkv_transpose_split
 from .fused_get_rotary_embedding import fused_get_rotary_embedding
+from .get_padding_offset import get_padding_offset
 
 __all__ = [
     'fused_multi_head_attention',
@@ -53,4 +54,5 @@ __all__ = [
     "masked_multihead_attention",
     "write_cache_kv",
     "rebuild_padding",
+    "get_padding_offset",
 ]
