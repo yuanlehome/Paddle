@@ -36,6 +36,8 @@ from .rebuild_padding import rebuild_padding
 from .qkv_transpose_split import qkv_transpose_split
 from .fused_get_rotary_embedding import fused_get_rotary_embedding
 from .get_padding_offset import get_padding_offset
+from .encode_rotary_qk import encode_rotary_qk
+
 
 __all__ = [
     'fused_multi_head_attention',
@@ -52,6 +54,7 @@ __all__ = [
     "fused_rms_norm",
     "fused_layer_norm",
     "masked_multihead_attention",
+    "encode_rotary_qk",
     "write_cache_kv",
     "rebuild_padding",
     "get_padding_offset",

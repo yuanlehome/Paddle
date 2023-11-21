@@ -792,6 +792,16 @@
   inplace : (x -> out)
   backward : elu_grad
 
+- op : encode_rotary_qk
+  args : (Tensor q, Tensor kv, Tensor rotary_emb, Tensor seq_lens, int rotary_emb_dims, bool use_neox)
+  output : Tensor(rotary_q_out), Tensor(rotary_kv_out)
+  infer_meta :
+    func : EncodeRotaryQKInferMeta
+  kernel :
+    func : encode_rotary_qk
+    data_type : q
+  inplace : (q -> rotary_q_out), (kv -> rotary_kv_out)
+
 - op : equal_all
   args : (Tensor x, Tensor y)
   output : Tensor(out)
