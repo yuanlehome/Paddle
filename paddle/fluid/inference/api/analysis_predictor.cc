@@ -108,7 +108,6 @@
 #include "paddle/fluid/pir/transforms/fusion/conv2d_add_act_fuse_pass.h"
 #include "paddle/fluid/pir/transforms/fusion/conv2d_add_fuse_pass.h"
 #include "paddle/fluid/pir/transforms/fusion/conv2d_bn_fuse_pass.h"
-#include "paddle/fluid/pir/transforms/inplace_pass.h"
 #include "paddle/fluid/pir/transforms/params_sync_among_devices_pass.h"
 #include "paddle/fluid/pir/transforms/pd_op_to_kernel_pass.h"
 #include "paddle/fluid/pir/transforms/replace_fetch_with_shadow_output_pass.h"
@@ -116,7 +115,6 @@
 #include "paddle/pir/pass/pass_manager.h"
 
 PHI_DECLARE_bool(enable_pir_in_executor);
-PHI_DECLARE_bool(pir_apply_inplace_pass);
 
 namespace paddle {
 namespace {
@@ -809,12 +807,6 @@ bool AnalysisPredictor::PrepareExecutor() {
 
       pir_program_ = std::move(
           paddle::dialect::PdOpLowerToKernelPass(pir_program_.get(), place_));
-
-      ::pir::PassManager pm_for_kernel_program(::pir::IrContext::Instance(), 3);
-      if (FLAGS_pir_apply_inplace_pass) {
-        pm_for_kernel_program.AddPass(::pir::CreateInplacePass());
-      }
-      pm_for_kernel_program.Run(pir_program_.get());
 
       executor_->PrepareInterpreterCore(
           sub_scope_, *pir_program_, execution_config);
@@ -1734,8 +1726,13 @@ void AnalysisPredictor::PrepareArgument() {
       argument_->SetEnableIrOptim(true);
       pass_builder->ClearPasses();
       pass_builder->AppendPass("auto_mixed_precision_pass");
+      pass_builder->AppendPass("inplace_op_var_pass");
       LOG(INFO) << "This model run in GPU mixed precision mode with no ir "
                    "optimization.";
+    } else if (config_.new_executor_enabled()) {
+      argument_->SetEnableIrOptim(true);
+      pass_builder->ClearPasses();
+      pass_builder->AppendPass("inplace_op_var_pass");
     } else {
       LOG(INFO)
           << "Ir optimization is turned off, no ir pass will be executed.";
