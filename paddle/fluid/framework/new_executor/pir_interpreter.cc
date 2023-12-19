@@ -46,6 +46,7 @@
 #endif
 
 #include "paddle/fluid/framework/new_executor/instruction/builtin_combine_instruction.h"
+#include "paddle/fluid/framework/new_executor/instruction/custom_kernel_instruction.h"
 #include "paddle/fluid/framework/new_executor/instruction/has_elements_instruction.h"
 #include "paddle/fluid/framework/new_executor/instruction/if_instruction.h"
 #include "paddle/fluid/framework/new_executor/instruction/legacy_kernel_instruction.h"
@@ -718,6 +719,10 @@ void PirInterpreter::BuildInstruction() {
     } else if (op.dialect()->name() == "cinn_runtime") {
       CREATE_INSTR(CinnJitInstruction);
 #endif
+    } else if (op.dialect()->name() == "custom_kernel") {
+      vec_instruction_base_.emplace_back(
+          std::make_unique<CustomKernelInstruction>(
+              op_idx++, place_, &op, *(value_exe_info_.get())));
     } else {
       PADDLE_THROW(platform::errors::Unimplemented(
           "Now only support pd_kernel and cinn dialect."));

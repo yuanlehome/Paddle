@@ -1297,7 +1297,7 @@ std::vector<std::string> GetOriginInputNames(const std::string& op_name) {
   if (op_info.GetInterfaceImpl<paddle::dialect::OpYamlInfoInterface>()) {
     paddle::dialect::OpYamlInfoParser yaml_parser(
         op_info.GetInterfaceImpl<paddle::dialect::OpYamlInfoInterface>()
-            ->get_op_info_());
+            ->get_op_info_(op_name));
     ret = yaml_parser.InputNames();
   }
   return ret;
@@ -1310,7 +1310,7 @@ std::vector<std::string> GetOriginOutputNames(const std::string& op_name) {
   if (op_info.GetInterfaceImpl<paddle::dialect::OpYamlInfoInterface>()) {
     paddle::dialect::OpYamlInfoParser yaml_parser(
         op_info.GetInterfaceImpl<paddle::dialect::OpYamlInfoInterface>()
-            ->get_op_info_());
+            ->get_op_info_(op_name));
     ret = yaml_parser.OutputNames();
   }
   return ret;

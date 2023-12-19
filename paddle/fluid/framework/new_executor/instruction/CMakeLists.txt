@@ -11,6 +11,7 @@ cc_library(
        tuple_pop_instruction.cc
        builtin_combine_instruction.cc
        instruction_util.cc
+       custom_kernel_instruction.cc
   DEPS pir_adaptor phi common framework_proto)
 
 if(WITH_CINN AND NOT CINN_ONLY)

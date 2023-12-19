@@ -76,8 +76,10 @@ using InputHandlerFn = std::function<pir::Value(pir::IrContext*,
 using AttributeHandlerFn = std::function<pir::Attribute(
     pir::IrContext*, const OpDesc&, const OpAttributeInfo&)>;
 using DenseTensorTypeStorage = paddle::dialect::DenseTensorTypeStorage;
-constexpr char kTargetDialectPrefix[] = "pd_op.";  // NOLINT
-constexpr char kEmptyVarName[] = "@EMPTY@";        // NOLINT
+constexpr const char* kTargetDialectPrefix[2] = {"pd_op.",
+                                                 "custom_op."};  // NOLINT
+constexpr int kTargetDialectNum = 2;                             // NOLINT
+constexpr char kEmptyVarName[] = "@EMPTY@";                      // NOLINT
 
 static const std::unordered_set<std::string> SpecialNonInplaceOps = {};
 
@@ -227,14 +229,22 @@ inline pir::Operation* InsertCreateArrayOp(pir::IrContext* ctx,
 
 pir::OpInfo OpTranscriber::LoopkUpOpInfo(pir::IrContext* ctx,
                                          const OpDesc& op_desc) {
-  std::string target_op_name =
-      kTargetDialectPrefix + OpNameCompatibleMapping(op_desc.Type());
-  if (IsInplace(op_desc) && *target_op_name.rbegin() != '_') {
-    target_op_name += "_";
+  pir::OpInfo op_info;
+  std::string target_op_name = "";
+  for (int i = 0; i < kTargetDialectNum; i++) {
+    target_op_name =
+        kTargetDialectPrefix[i] + OpNameCompatibleMapping(op_desc.Type());
+    if (IsInplace(op_desc) && *target_op_name.rbegin() != '_') {
+      target_op_name += "_";
+    }
+    op_info = ctx->GetRegisteredOpInfo(target_op_name);
+    if (op_info) {
+      VLOG(6) << "[op name normalizing]: " << op_desc.Type() << " to "
+              << target_op_name;
+      break;
+    }
   }
-  VLOG(6) << "[op name normalizing]: " << op_desc.Type() << " to "
-          << target_op_name;
-  auto op_info = ctx->GetRegisteredOpInfo(target_op_name);
+
   if (!op_info) {
     IR_THROW("Op %d should have corresponding OpInfo %d",
              op_desc.Type(),
@@ -254,7 +264,7 @@ pir::OpInfo OpTranscriber::LoopkUpOpInfo(pir::IrContext* ctx,
   OpAttributeInfoList attr_infos;
   OpOutputInfoList output_infos;
   std::tie(input_infos, attr_infos, output_infos, std::ignore, std::ignore) =
-      op_info_concept->get_op_info_();
+      op_info_concept->get_op_info_(op_info.name());
 
   auto& op_normalizer = OpNameNormalizer::instance();
   std::vector<std::string> need_inputs_sig;
@@ -320,14 +330,18 @@ pir::OpInfo OpTranscriber::LoopkUpOpInfo(pir::IrContext* ctx,
              "Op %d should have corresponding OpInfo %d",
              op_desc.Type(),
              target_op_name);
-
-  target_op_name = kTargetDialectPrefix + target_op_name;
-  if (IsInplace(op_desc) && *target_op_name.rbegin() != '_') {
-    target_op_name += "_";
+  for (int i = 0; i < kTargetDialectNum; i++) {
+    target_op_name = kTargetDialectPrefix[i] + target_op_name;
+    if (IsInplace(op_desc) && *target_op_name.rbegin() != '_') {
+      target_op_name += "_";
+    }
+    op_info = ctx->GetRegisteredOpInfo(target_op_name);
+    if (op_info) {
+      VLOG(6) << "[op name normalizing]: " << op_desc.Type() << " to "
+              << target_op_name;
+      break;
+    }
   }
-  VLOG(6) << "[op name normalizing]: " << op_desc.Type() << " to "
-          << target_op_name;
-  op_info = ctx->GetRegisteredOpInfo(target_op_name);
   if (!op_info) {
     IR_THROW("Op %d should have corresponding OpInfo %d",
              op_desc.Type(),
@@ -750,8 +764,9 @@ pir::Operation* OpTranscriber::operator()(pir::IrContext* ctx,
   OpInputInfoList input_infos;
   OpAttributeInfoList attr_infos;
   OpOutputInfoList output_infos;
+
   std::tie(input_infos, attr_infos, output_infos, std::ignore, std::ignore) =
-      op_info_concept->get_op_info_();
+      op_info_concept->get_op_info_(op_info.name());
 
   this->InsertSliceOperationForInput(
       ctx, param_map, op_desc, input_infos, block);
@@ -768,7 +783,6 @@ pir::Operation* OpTranscriber::operator()(pir::IrContext* ctx,
       this->TranslateOpAttribute(ctx, op_info.name(), attr_infos, op_desc);
   TranslateOpDistAttribute(op_desc, &attribute_map);
   VLOG(4) << "[general op][" << op_desc.Type() << "] preparation end.";
-
   pir::Operation* operation = pir::Operation::Create(
       op_inputs, attribute_map, op_output_types, op_info);
   VLOG(4) << "[general op][" << op_desc.Type() << "] opearation creation end.";
@@ -898,7 +912,7 @@ struct AssignValueOpTranscriber : public OpTranscriber {
     OpAttributeInfoList attr_infos;
     OpOutputInfoList output_infos;
     std::tie(input_infos, attr_infos, output_infos, std::ignore, std::ignore) =
-        op_info_concept->get_op_info_();
+        op_info_concept->get_op_info_(op_info.name());
     std::unordered_map<std::string, OpAttributeInfo> attr_info_maps;
     for (auto const& info : attr_infos) {
       attr_info_maps.insert({info.name, info});
@@ -1042,7 +1056,7 @@ struct EmbeddingGradOpTranscriber : public OpTranscriber {
   pir::OpInfo LoopkUpOpInfo(pir::IrContext* ctx,
                             const OpDesc& op_desc) override {
     std::string target_op_name =
-        kTargetDialectPrefix + OpNameCompatibleMapping(op_desc.Type());
+        kTargetDialectPrefix[0] + OpNameCompatibleMapping(op_desc.Type());
 
     bool is_sparse = paddle::get<bool>(op_desc.GetAttr("is_sparse"));
 
@@ -1231,7 +1245,7 @@ struct FetchOpTranscriber : public OpTranscriber {
     OpAttributeInfoList attr_infos;
     OpOutputInfoList output_infos;
     std::tie(input_infos, attr_infos, output_infos, std::ignore, std::ignore) =
-        op_info_concept->get_op_info_();
+        op_info_concept->get_op_info_(op_info.name());
 
     this->InsertSliceOperationForInput(
         ctx, param_map, op_desc, input_infos, block);
@@ -1295,7 +1309,7 @@ struct AddNOpTranscriber : public OpTranscriber {
   pir::OpInfo LoopkUpOpInfo(pir::IrContext* ctx,
                             const OpDesc& op_desc) override {
     std::string target_op_name =
-        kTargetDialectPrefix + OpNameCompatibleMapping(op_desc.Type());
+        kTargetDialectPrefix[0] + OpNameCompatibleMapping(op_desc.Type());
     if (IsInplace(op_desc)) {
       target_op_name += "_";
     } else {
