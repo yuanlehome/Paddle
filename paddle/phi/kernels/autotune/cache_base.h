@@ -19,10 +19,14 @@
 #include <vector>
 
 #include "paddle/common/errors.h"
+#include "paddle/common/funcs.h"
 #include "paddle/phi/core/enforce.h"
 #include "paddle/phi/core/flags.h"
 
 PHI_DECLARE_int32(search_cache_max_number);
+
+namespace phi {
+namespace autotune {
 
 inline void HashCombine(std::size_t* seed UNUSED) {}
 
@@ -35,24 +39,6 @@ inline void HashCombine(std::size_t* seed, const T& v, Rest... rest) {
   *seed *= 0x00000100000001B3;
   HashCombine(seed, rest...);
 }
-
-// custom specialization of std::hash can be injected in namespace std
-// ref: https://en.cppreference.com/w/cpp/utility/hash
-namespace std {
-template <typename T>
-struct hash<std::vector<T>> {
-  std::size_t operator()(std::vector<T> const& vec) const noexcept {
-    std::size_t seed = 0xcbf29ce484222325;
-    for (auto val : vec) {
-      HashCombine(&seed, val);
-    }
-    return seed;
-  }
-};
-}  // namespace std
-
-namespace phi {
-namespace autotune {
 
 template <typename... Args>
 size_t GenKey(Args&&... args) {
