@@ -755,6 +755,16 @@
     func : expm1_grad
   inplace : (out_grad -> x_grad)
 
+- backward_op : fake_channel_wise_quantize_dequantize_abs_max_grad
+  forward: fake_channel_wise_quantize_dequantize_abs_max(Tensor x, int bit_length = 8, int round_type = 1, int quant_axis = 0) -> Tensor(out), Tensor(out_scale)
+  args : (Tensor out_grad, int bit_length = 8, int round_type = 1, int quant_axis = 0)
+  output: Tensor(x_grad)
+  infer_meta :
+    func : UnchangedInferMeta
+    param : [out_grad]
+  kernel :
+    func : fake_channel_wise_quantize_dequantize_abs_max_grad
+
 - backward_op : fft_c2c_grad
   forward: fft_c2c(Tensor x, int64_t[] axes, str normalization, bool forward) -> Tensor(out)
   args : (Tensor out_grad, int64_t[] axes, str normalization, bool forward)
@@ -1813,6 +1823,18 @@
   args : (Tensor out_grad, IntArray axis)
   output : Tensor(x_grad)
   invoke : reverse(out_grad, axis)
+
+- backward_op : rms_norm_grad
+  forward : rms_norm (Tensor x, Tensor bias, Tensor residual, Tensor norm_weight, Tensor norm_bias, float epsilon, int begin_norm_axis, float quant_scale, int quant_round_type, float quant_max_bound, float quant_min_bound) -> Tensor(out), Tensor(residual_out), Tensor(inv_var)
+  args : (Tensor x, Tensor bias, Tensor residual, Tensor norm_weight, Tensor norm_bias, Tensor inv_var, Tensor out_grad,float epsilon, int begin_norm_axis, float quant_scale)
+  output : Tensor(x_grad), Tensor(norm_weight_grad)
+  infer_meta :
+    func: RmsNormGradInferMeta
+    param: [x, norm_weight]
+  kernel :
+    func : rms_norm_grad
+    data_type : x
+  optional : bias, residual, norm_bias
 
 - backward_op : roi_align_grad
   forward : roi_align (Tensor x, Tensor boxes, Tensor boxes_num, int pooled_height=1, int pooled_width=1, float spatial_scale=1.0, int sampling_ratio=-1, bool aligned=false) -> Tensor(out)

@@ -2918,6 +2918,212 @@ void PsroiPoolInferMeta(const MetaTensor& x,
   out->set_dtype(x.dtype());
 }
 
+void QuantizeLinearInferMeta(const MetaTensor& x,
+                             const MetaTensor& scale,
+                             const MetaTensor& zero_point,
+                             const MetaTensor& in_accum,
+                             const MetaTensor& in_state,
+                             int quant_axis,
+                             int bit_length,
+                             int round_type,
+                             bool is_test,
+                             bool only_observer,
+                             MetaTensor* y,
+                             MetaTensor* out_state,
+                             MetaTensor* out_accum,
+                             MetaTensor* out_scale) {
+  PADDLE_ENFORCE_EQ(
+      quant_axis == 0 || quant_axis == 1 || quant_axis == -1,
+      true,
+      phi::errors::InvalidArgument("'quant_axis' should be 0, 1 or -1, but "
+                                   "the received is %d",
+                                   quant_axis));
+  PADDLE_ENFORCE_EQ(bit_length >= 1 && bit_length <= 16,
+                    true,
+                    phi::errors::InvalidArgument(
+                        "'bit_length' should be between 1 and 16, but "
+                        "the received is %d",
+                        bit_length));
+  PADDLE_ENFORCE_EQ(round_type == 0 || round_type == 1,
+                    true,
+                    phi::errors::InvalidArgument(
+                        "'round_type' should be 0 or 1, 0 rounding to "
+                        "nearest ties to even and 1 is rounding to nearest "
+                        "ties away from zero.but the received is %d",
+                        round_type));
+  y->set_dims(x.dims());
+  y->share_lod(x);
+  if (out_scale) {
+    if (quant_axis < 0) {
+      out_scale->set_dims(scale.dims());
+    } else {
+      out_scale->set_dims({x.dims()[quant_axis]});
+    }
+  }
+  if (out_accum) {
+    out_accum->set_dims(in_accum.dims());
+  }
+  if (out_state) {
+    out_state->set_dims(in_state.dims());
+  }
+}
+
+void RAdamInferMeta(const MetaTensor& param,
+                    const MetaTensor& grad,
+                    const MetaTensor& learning_rate,
+                    const MetaTensor& beta1_pow,
+                    const MetaTensor& beta2_pow,
+                    const MetaTensor& rho,
+                    const MetaTensor& moment1,
+                    const MetaTensor& moment2,
+                    const MetaTensor& master_param,
+                    float beta1,
+                    float beta2,
+                    float epsilon,
+                    bool multi_precision,
+                    MetaTensor* param_out,
+                    MetaTensor* beta1_pow_out,
+                    MetaTensor* beta2_pow_out,
+                    MetaTensor* rho_out,
+                    MetaTensor* moment1_out,
+                    MetaTensor* moment2_out,
+                    MetaTensor* master_param_out) {
+  auto param_dim = param.dims();
+  PADDLE_ENFORCE_EQ(param_dim,
+                    moment1.dims(),
+                    phi::errors::InvalidArgument(
+                        "Param and Momentum input of RAdamOp "
+                        "should have the same dimension. But received "
+                        "Param's dim [%s] and Moment1 [%s]",
+                        param_dim,
+                        moment1.dims()));
+  PADDLE_ENFORCE_EQ(param_dim,
+                    moment2.dims(),
+                    phi::errors::InvalidArgument(
+                        "Param and Momentum input of RAdamOp "
+                        "should have the same dimension. But received "
+                        "Param's dim [%s] and Moment2 [%s]",
+                        param_dim,
+                        moment2.dims()));
+
+  auto lr_dim = learning_rate.dims();
+  PADDLE_ENFORCE_EQ(phi::product(lr_dim),
+                    1,
+                    phi::errors::InvalidArgument(
+                        "Learning Rate of RAdamOp should be a scalar. But "
+                        "received LearningRate's dim [%s]",
+                        phi::product(lr_dim)));
+
+  if (master_param.initialized()) {
+    PADDLE_ENFORCE_EQ(param_dim,
+                      master_param.dims(),
+                      errors::InvalidArgument(
+                          "Param and MasterParam input of RAdamOp should "
+                          "have same dimension. But "
+                          "received Param dims: [%s], MasterParam dims: [%s].",
+                          param_dim,
+                          master_param.dims()));
+  }
+
+  param_out->set_dims(param_dim);
+  param_out->set_dtype(param.dtype());
+
+  beta1_pow_out->set_dims(beta1_pow.dims());
+  beta1_pow_out->set_dtype(beta1_pow.dtype());
+  beta2_pow_out->set_dims(beta2_pow.dims());
+  beta2_pow_out->set_dtype(beta2_pow.dtype());
+  rho_out->set_dims(rho.dims());
+  rho_out->set_dtype(rho.dtype());
+
+  moment1_out->set_dims(param_dim);
+  moment1_out->set_dtype(moment1.dtype());
+  moment2_out->set_dims(param_dim);
+  moment2_out->set_dtype(moment2.dtype());
+
+  if (multi_precision && master_param.initialized()) {
+    auto MPType = (param.dtype() == phi::DataType::FLOAT16 ||
+                   param.dtype() == phi::DataType::BFLOAT16)
+                      ? phi::DataType::FLOAT32
+                      : param.dtype();
+    master_param_out->set_dims(param_dim);
+    master_param_out->set_dtype(MPType);
+  }
+}
+
+void RmsNormInferMeta(const MetaTensor& x,
+                      const MetaTensor& bias,
+                      const MetaTensor& residual,
+                      const MetaTensor& norm_weight,
+                      const MetaTensor& norm_bias,
+                      const float epsilon,
+                      const int begin_norm_axis,
+                      const float quant_scale,
+                      const int quant_round_type,
+                      const float quant_max_bound,
+                      const float quant_min_bound,
+                      MetaTensor* out,
+                      MetaTensor* residual_out,
+                      MetaTensor* inv_var) {
+  std::vector<int64_t> x_dims_vec = phi::vectorize(x.dims());
+  auto x_dims_size = x_dims_vec.size();
+
+  size_t normalized_dims = 1;
+  for (size_t i = begin_norm_axis; i < x_dims_size; ++i) {
+    normalized_dims *= x_dims_vec[i];
+  }
+
+  std::vector<int64_t> inv_var_dims;
+  for (size_t i = size_t(0); i < static_cast<size_t>(begin_norm_axis); i++) {
+    inv_var_dims.push_back(x_dims_vec[i]);
+  }
+  PADDLE_ENFORCE_EQ(normalized_dims,
+                    norm_weight.dims()[0],
+                    phi::errors::InvalidArgument(
+                        "The normalized size of Input(X) must equal to be"
+                        "the size of Weight, but received"
+                        "normalized size of Input(X) is [%d], received size"
+                        "of Weight is [%d]",
+                        normalized_dims,
+                        norm_weight.dims()[0]));
+
+  auto out_dims = phi::make_ddim(x_dims_vec);
+
+  out->set_dims(out_dims);
+  if (quant_scale <= 0.0f) {
+    out->set_dtype(x.dtype());
+  } else {
+    out->set_dtype(phi::DataType::INT8);
+  }
+  out->set_layout(x.layout());
+  out->share_lod(x);
+
+  if (inv_var != nullptr) {
+    inv_var->set_dtype(phi::DataType::FLOAT32);
+    inv_var->set_dims(phi::make_ddim(inv_var_dims));
+    inv_var->set_layout(x.layout());
+  }
+
+  residual_out->set_dims(out_dims);
+  residual_out->set_dtype(x.dtype());
+  residual_out->set_layout(x.layout());
+  residual_out->share_lod(x);
+}
+
+void RmsNormGradInferMeta(const MetaTensor& x,
+                          const MetaTensor& norm_weight,
+                          MetaTensor* x_grad,
+                          MetaTensor* norm_weight_grad) {
+  x_grad->set_dtype(x.dtype());
+  x_grad->set_layout(x.layout());
+  x_grad->share_lod(x);
+  x_grad->set_dims(x.dims());
+
+  norm_weight_grad->set_dtype(norm_weight.dtype());
+  norm_weight_grad->set_layout(norm_weight.layout());
+  norm_weight_grad->share_lod(norm_weight);
+  norm_weight_grad->set_dims(norm_weight.dims());
+}
+
 void RmspropInferMeta(const MetaTensor& param,
                       const MetaTensor& mean_square,
                       const MetaTensor& grad,
@@ -3772,6 +3978,36 @@ void MoeInferMeta(const MetaTensor& x,
   out->share_lod(x);
   out->set_dtype(x.dtype());
   out->set_layout(x.layout());
+}
+
+void FakeQuantOrWithDequantMovingAverageAbsMaxInferMeta(
+    const MetaTensor& x,
+    const MetaTensor& in_scale,
+    const MetaTensor& in_accum,
+    const MetaTensor& in_state,
+    float moving_rate,
+    int bit_length,
+    bool is_test,
+    int round_type,
+    MetaTensor* out,
+    MetaTensor* out_scale,
+    MetaTensor* out_state,
+    MetaTensor* out_accum) {
+  PADDLE_ENFORCE_EQ(bit_length >= 1 && bit_length <= 16,
+                    true,
+                    phi::errors::InvalidArgument(
+                        "'bit_length' should be between 1 and 16, but "
+                        "the received is %d",
+                        bit_length));
+  if (out_state) {
+    out_state->set_dims({1});
+  }
+  if (out_accum) {
+    out_accum->set_dims({1});
+  }
+  out->set_dims(x.dims());
+  out_scale->set_dims({1});
+  out->share_lod(x);
 }
 
 void WeightedSampleNeighborsInferMeta(const MetaTensor& row,

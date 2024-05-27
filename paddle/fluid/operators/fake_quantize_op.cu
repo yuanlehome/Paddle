@@ -18,34 +18,10 @@ limitations under the License. */
 namespace ops = paddle::operators;
 using float16 = paddle::platform::float16;
 
-PD_REGISTER_STRUCT_KERNEL(fake_quantize_abs_max,
-                          GPU,
-                          ALL_LAYOUT,
-                          ops::FakeQuantizeAbsMaxKernel,
-                          float,
-                          float16) {}
 PD_REGISTER_STRUCT_KERNEL(fake_quantize_dequantize_abs_max,
                           GPU,
                           ALL_LAYOUT,
                           ops::FakeQuantizeDequantizeAbsMaxKernel,
-                          float,
-                          float16) {}
-PD_REGISTER_STRUCT_KERNEL(fake_channel_wise_quantize_abs_max,
-                          GPU,
-                          ALL_LAYOUT,
-                          ops::FakeChannelWiseQuantizeAbsMaxKernel,
-                          float,
-                          float16) {}
-PD_REGISTER_STRUCT_KERNEL(fake_quantize_range_abs_max,
-                          GPU,
-                          ALL_LAYOUT,
-                          ops::FakeQuantizeRangeAbsMaxKernel,
-                          float,
-                          float16) {}
-PD_REGISTER_STRUCT_KERNEL(fake_quantize_moving_average_abs_max,
-                          GPU,
-                          ALL_LAYOUT,
-                          ops::FakeQuantizeMovingAverageAbsMaxKernel,
                           float,
                           float16) {}
 PD_REGISTER_STRUCT_KERNEL(moving_average_abs_max_scale,
@@ -66,8 +42,3 @@ PD_REGISTER_STRUCT_KERNEL(stright_throuth_estimator_grad,
                           ops::StrightThroughEstimatorGradKernel,
                           float,
                           float16) {}
-PD_REGISTER_STRUCT_KERNEL(fake_channel_wise_quantize_dequantize_abs_max,
-                          GPU,
-                          ALL_LAYOUT,
-                          ops::FakeChannelWiseQuantizeDequantizeAbsMaxKernel,
-                          float) {}
