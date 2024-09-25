@@ -38,10 +38,6 @@ def get_cuda_version():
         return -1
 
 
-@unittest.skipIf(
-    not core.is_compiled_with_cuda() or get_cuda_version() < 11020,
-    "weight_only_linear requires CUDA >= 11.2",
-)
 class TestFusedWeightOnlyLinearPass_WithBias(PassTest):
     def is_config_valid(self, w_shape, bias_shape):
         if w_shape[-1] != bias_shape[-1]:
@@ -90,11 +86,6 @@ class TestFusedWeightOnlyLinearPass_WithBias(PassTest):
                 "pd_op.add": 0,
             }
 
-    def setUp(self):
-        if core.is_compiled_with_cuda():
-            self.places.append(paddle.CUDAPlace(0))
-        self.pass_attr_list = [{'fused_weight_only_linear_pass': {}}]
-
     def sample_program(self):
         for dtype in ['float16', "float32"]:
             for w_shape in [[4096, 2048], [4096, 1024]]:
@@ -142,10 +133,6 @@ class TestFusedWeightOnlyLinearPass_WithBias(PassTest):
                             yield [main_prog, start_prog], False
 
 
-@unittest.skipIf(
-    not core.is_compiled_with_cuda() or get_cuda_version() < 11020,
-    "weight_only_linear requires CUDA >= 11.2",
-)
 class TestFusedWeightOnlyLinearPass_NoBias(PassTest):
     def get_valid_op_map(self, dtype, w_shape):
         # weight_quantize need weight's dtype to be fp16 or bf16
@@ -187,11 +174,6 @@ class TestFusedWeightOnlyLinearPass_NoBias(PassTest):
                 "pd_op.weight_quantize": 1,
                 "pd_op.matmul": 0,
             }
-
-    def setUp(self):
-        if core.is_compiled_with_cuda():
-            self.places.append(paddle.CUDAPlace(0))
-        self.pass_attr_list = [{'fused_weight_only_linear_pass': {}}]
 
     def sample_program(self):
         for dtype in ['float16', "float32"]:
