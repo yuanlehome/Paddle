@@ -21,7 +21,9 @@
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/backends/gpu/gpu_info.h"
 #include "paddle/phi/backends/gpu/gpu_launch_config.h"
+#include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/core/platform/cuda_graph_with_memory_pool.h"
 #include "paddle/phi/kernels/funcs/blas/blas.h"
 #include "paddle/phi/kernels/funcs/cub.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
@@ -160,9 +162,14 @@ static __global__ void FillIndex(T* indices, T num_rows, T num_cols) {
 #define CUB_ARGSORT_WRAPPER(func, ...)                                        \
   {                                                                           \
     size_t temp_storage_bytes = 0;                                            \
-    PADDLE_ENFORCE_GPU_SUCCESS(                                               \
-        func(nullptr, temp_storage_bytes, __VA_ARGS__));                      \
-    DenseTensor temp_storage;                                                 \
+    {                                                                         \
+      /* The nullptr-query call must not be captured in a CUDA graph since it \
+       * does not enqueue any GPU work but merely returns a size. Use         \
+       * SkipCUDAGraphCaptureGuard to temporarily pause capture. */           \
+      paddle::platform::SkipCUDAGraphCaptureGuard skip_guard;                 \
+      PADDLE_ENFORCE_GPU_SUCCESS(                                             \
+          func(nullptr, temp_storage_bytes, __VA_ARGS__));                    \
+    }                                                                         \
     int64_t temp_size = static_cast<int64_t>(temp_storage_bytes);             \
     PADDLE_ENFORCE_GT(                                                        \
         temp_size,                                                            \
@@ -170,10 +177,21 @@ static __global__ void FillIndex(T* indices, T num_rows, T num_cols) {
         common::errors::InvalidArgument(                                      \
             "Argsort temp storage size is %d, but should be greater than 0.", \
             temp_size));                                                      \
-    temp_storage.Resize({temp_size});                                         \
-    dev_ctx.template Alloc<uint8_t>(&temp_storage);                           \
+    /* Allocate temp storage via phi::memory_utils::Alloc whose AllocationPtr \
+     * destructor calls FreeImpl through the allocator. Since cudaFree is not \
+     * allowed while a stream is capturing, we must free the allocation while \
+     * capture is temporarily paused (inside another guard). */               \
+    phi::Allocator::AllocationPtr temp_alloc =                                \
+        phi::memory_utils::Alloc(dev_ctx.GetPlace(), temp_size);              \
+    void* temp_ptr = temp_alloc->ptr();                                       \
     PADDLE_ENFORCE_GPU_SUCCESS(                                               \
-        func(temp_storage.data<uint8_t>(), temp_storage_bytes, __VA_ARGS__)); \
+        func(temp_ptr, temp_storage_bytes, __VA_ARGS__));                     \
+    /* Release temp_alloc while capture is paused to avoid cudaFree being     \
+     * called on a capturing stream. */                                       \
+    {                                                                         \
+      paddle::platform::SkipCUDAGraphCaptureGuard skip_guard2;                \
+      temp_alloc.reset();                                                     \
+    }                                                                         \
   }
 
 #define PREDICATE_CUB_ARGSORT(predicate, if_func, else_func, ...) \
@@ -233,9 +251,8 @@ void ArgFullSort(const GPUContext& dev_ctx,
   const int64_t batch_size =
       (adjusted_elements_per_call / segment_size) * segment_size;
   int64_t offset = 0;
-  DenseTensor input_indices;
-
-  T* sorted_out_ptr = sorted_out_ptr = output->data<T>();
+  T* sorted_out_ptr = output->data<T>();
+  phi::Allocator::AllocationPtr input_indices_alloc;
   IndType* ind_ptr = nullptr;
 
   while (offset < total_elements) {
@@ -244,13 +261,13 @@ void ArgFullSort(const GPUContext& dev_ctx,
 
     // allocate a temporary storage for input indices, with shape:
     // [num_segments = n_elements / segment_size, segment_size]
-    // will be de-allocated once the sort is done, to save memory and
-    // avoid repeated allocation and deallocation
-    if (input_indices.initialized()) {
-      ind_ptr = input_indices.data<IndType>();
-    } else {
-      input_indices.Resize({n_segments, segment_size});
-      ind_ptr = dev_ctx.template Alloc<IndType>(&input_indices);
+    // Use AllocationPtr (instead of DenseTensor) so we can free it inside a
+    // SkipCUDAGraphCaptureGuard, ensuring cudaFree is never called on a
+    // capturing stream.
+    if (input_indices_alloc == nullptr) {
+      input_indices_alloc = phi::memory_utils::Alloc(
+          dev_ctx.GetPlace(), n_segments * segment_size * sizeof(IndType));
+      ind_ptr = reinterpret_cast<IndType*>(input_indices_alloc->ptr());
     }
     const int64_t grid_size = std::min(n_segments, maxGridDimX);
     // Init a index array
@@ -273,40 +290,78 @@ void ArgFullSort(const GPUContext& dev_ctx,
                           cu_stream);
     offset += n_elements;
   }
+  // Free temporary index buffer while capture is paused so cudaFree is not
+  // called on a capturing stream.
+  if (input_indices_alloc != nullptr) {
+    paddle::platform::SkipCUDAGraphCaptureGuard skip_free_guard;
+    input_indices_alloc.reset();
+  }
 }
+// Sort a contiguous range [start, end) of keys/values using CUB
+// DeviceRadixSort, which is a stable sort and is compatible with CUDA graph
+// capture (the nullptr-query phase is guarded by SkipCUDAGraphCaptureGuard
+// inside CUB_ARGSORT_WRAPPER).
 template <typename T, typename IndType>
 void PerSort(const GPUContext& dev_ctx,
              T* out_data,
-             int64_t* ids_data,
+             IndType* ids_data,
              IndType start,
              IndType end,
              bool stable,
              bool descending) {
-#ifdef PADDLE_WITH_CUDA
-  const auto& exec_policy = thrust::cuda::par.on(dev_ctx.stream());
-#else
-  const auto& exec_policy = thrust::hip::par.on(dev_ctx.stream());
-#endif
-  if (stable) {
-    if (descending) {
-      thrust::stable_sort_by_key(exec_policy,
-                                 out_data + start,
-                                 out_data + end,
-                                 ids_data + start,
-                                 thrust::greater<T>());
-    } else {
-      thrust::stable_sort_by_key(
-          exec_policy, out_data + start, out_data + end, ids_data + start);
-    }
-    return;
+  const IndType count = end - start;
+  if (count <= 0) return;
+
+  // CUB DeviceRadixSort requires separate input/output buffers.
+  // Allocate via phi::memory_utils::Alloc and manually free inside a
+  // SkipCUDAGraphCaptureGuard so that cudaFree is never called on a
+  // capturing stream.
+  phi::Allocator::AllocationPtr keys_alloc =
+      phi::memory_utils::Alloc(dev_ctx.GetPlace(), count * sizeof(T));
+  phi::Allocator::AllocationPtr vals_alloc =
+      phi::memory_utils::Alloc(dev_ctx.GetPlace(), count * sizeof(IndType));
+  T* tmp_keys = reinterpret_cast<T*>(keys_alloc->ptr());
+  IndType* tmp_vals = reinterpret_cast<IndType*>(vals_alloc->ptr());
+
+  if (descending) {
+    CUB_ARGSORT_WRAPPER(cub::DeviceRadixSort::SortPairsDescending,
+                        out_data + start,
+                        tmp_keys,
+                        ids_data + start,
+                        tmp_vals,
+                        static_cast<int>(count),
+                        0,
+                        sizeof(T) * 8,
+                        dev_ctx.stream());
   } else {
-    thrust::sort_by_key(
-        exec_policy, out_data + start, out_data + end, ids_data + start);
-    if (descending) {
-      thrust::reverse(exec_policy, out_data + start, out_data + end);
-      thrust::reverse(exec_policy, ids_data + start, ids_data + end);
-    }
-    return;
+    CUB_ARGSORT_WRAPPER(cub::DeviceRadixSort::SortPairs,
+                        out_data + start,
+                        tmp_keys,
+                        ids_data + start,
+                        tmp_vals,
+                        static_cast<int>(count),
+                        0,
+                        sizeof(T) * 8,
+                        dev_ctx.stream());
+  }
+  // Copy sorted results back in-place using cudaMemcpyAsync, which is
+  // compatible with CUDA graph capture.
+  PADDLE_ENFORCE_GPU_SUCCESS(cudaMemcpyAsync(out_data + start,
+                                             tmp_keys,
+                                             count * sizeof(T),
+                                             cudaMemcpyDeviceToDevice,
+                                             dev_ctx.stream()));
+  PADDLE_ENFORCE_GPU_SUCCESS(cudaMemcpyAsync(ids_data + start,
+                                             tmp_vals,
+                                             count * sizeof(IndType),
+                                             cudaMemcpyDeviceToDevice,
+                                             dev_ctx.stream()));
+  // Free temp buffers while capture is paused so cudaFree is not called on
+  // a capturing stream.
+  {
+    paddle::platform::SkipCUDAGraphCaptureGuard skip_free_guard;
+    keys_alloc.reset();
+    vals_alloc.reset();
   }
 }
 
@@ -341,21 +396,36 @@ void ArgsortKernel(const Context& dev_ctx,
     return;
   }
 
-  // Use thrust for parallel acceleration when the input size is equal to the
+  // Use CUB for parallel acceleration when the input size is equal to the
   // length of the 'axis' dimension.
-  // Compared to the following 'Special case for full sort', ascending sort is
-  // 34 times faster and descending sort is 31 times faster.
-  if (size == in_dims[axis]) {
+  // Skip this path during CUDA graph capture because cub::DeviceRadixSort
+  // internally uses thrust::parallel_for which calls cudaStreamSynchronize,
+  // an operation that is not permitted during stream capture. Fall through to
+  // the full-sort (DeviceSegmentedRadixSort) path instead, which is
+  // CUDA-graph-compatible.
+  if (size == in_dims[axis] &&
+      !phi::backends::gpu::CUDAGraph::IsThisThreadCapturing()) {
     T* out_data = dev_ctx.template Alloc<T>(output);
     int64_t* ids_data = dev_ctx.template Alloc<int64_t>(indices);
-#ifdef PADDLE_WITH_CUDA
-    const auto& exec_policy = thrust::cuda::par.on(dev_ctx.stream());
-#else
-    const auto& exec_policy = thrust::hip::par.on(dev_ctx.stream());
-#endif
     auto cu_stream = dev_ctx.stream();
-    thrust::sequence(exec_policy, ids_data, ids_data + size);
-    thrust::copy(exec_policy, in_data, in_data + size, out_data);
+
+    // Use a custom kernel to fill sequence 0..size-1 into ids_data.
+    // thrust::sequence uses internal synchronization that is incompatible
+    // with CUDA graph capture.
+    {
+      auto config = phi::backends::gpu::GetGpuLaunchConfig1D(dev_ctx, size);
+      FillIndex<int64_t><<<config.block_per_grid.x,
+                           config.thread_per_block.x,
+                           0,
+                           cu_stream>>>(ids_data, 1, size);
+    }
+    // Use cudaMemcpyAsync instead of thrust::copy; memcpy is always
+    // capturable in CUDA graphs.
+    PADDLE_ENFORCE_GPU_SUCCESS(cudaMemcpyAsync(out_data,
+                                               in_data,
+                                               size * sizeof(T),
+                                               cudaMemcpyDeviceToDevice,
+                                               cu_stream));
     const int64_t per_number = (1LL << 31) - 1;
     int64_t start = 0;
     int64_t end = std::min(start + per_number, size);
@@ -388,8 +458,16 @@ void ArgsortKernel(const Context& dev_ctx,
                                       temp_data,
                                       temp_ids,
                                       descending);
-          thrust::copy(exec_policy, temp_ids, temp_ids + end, ids_data);
-          thrust::copy(exec_policy, temp_data, temp_data + end, out_data);
+          PADDLE_ENFORCE_GPU_SUCCESS(cudaMemcpyAsync(ids_data,
+                                                     temp_ids,
+                                                     end * sizeof(int64_t),
+                                                     cudaMemcpyDeviceToDevice,
+                                                     cu_stream));
+          PADDLE_ENFORCE_GPU_SUCCESS(cudaMemcpyAsync(out_data,
+                                                     temp_data,
+                                                     end * sizeof(T),
+                                                     cudaMemcpyDeviceToDevice,
+                                                     cu_stream));
         }
         start = end;
         end = std::min(start + per_number, size);

@@ -22,7 +22,9 @@
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/common/amp_type_traits.h"
 #include "paddle/phi/common/memory_utils.h"
+#include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/core/platform/cuda_graph_with_memory_pool.h"
 #include "paddle/phi/kernels/funcs/cub.h"
 #include "paddle/phi/kernels/funcs/cumprod.h"
 #include "paddle/phi/kernels/funcs/elementwise_functor.h"
@@ -294,17 +296,24 @@ void ThrustCumsumKernel(const Context& dev_ctx,
       }
     }
   } else {
-    thrust::device_vector<MT> tmp_in(size);
-    thrust::device_vector<MT> tmp_out(size);
-    thrust::copy(policy, in_data, in_data + size, tmp_in.begin());
+    // Use Paddle's allocator (AllocationPtr) instead of DenseTensor to ensure
+    // the memory is freed inside a SkipCUDAGraphCaptureGuard, preventing
+    // cudaFree from being called on a capturing stream.
+    phi::Allocator::AllocationPtr tmp_in_alloc =
+        phi::memory_utils::Alloc(dev_ctx.GetPlace(), size * sizeof(MT));
+    phi::Allocator::AllocationPtr tmp_out_alloc =
+        phi::memory_utils::Alloc(dev_ctx.GetPlace(), size * sizeof(MT));
+    MT* tmp_in_ptr = reinterpret_cast<MT*>(tmp_in_alloc->ptr());
+    MT* tmp_out_ptr = reinterpret_cast<MT*>(tmp_out_alloc->ptr());
 
-    auto tmp_in_begin = tmp_in.begin();
-    auto tmp_in_end = tmp_in.end();
-    auto tmp_out_begin = tmp_out.begin();
+    auto tmp_in_dev_ptr = thrust::device_pointer_cast(tmp_in_ptr);
+    auto tmp_out_dev_ptr = thrust::device_pointer_cast(tmp_out_ptr);
+
+    thrust::copy(policy, in_data, in_data + size, tmp_in_dev_ptr);
 
     if (reverse) {
-      auto reversed_in = tmp_in.rbegin();
-      auto reversed_out = tmp_out.rbegin();
+      auto reversed_in = thrust::make_reverse_iterator(tmp_in_dev_ptr + size);
+      auto reversed_out = thrust::make_reverse_iterator(tmp_out_dev_ptr + size);
       if (exclusive) {
         thrust::exclusive_scan(
             policy, reversed_in, reversed_in + size, reversed_out);
@@ -314,13 +323,21 @@ void ThrustCumsumKernel(const Context& dev_ctx,
       }
     } else {
       if (exclusive) {
-        thrust::exclusive_scan(policy, tmp_in_begin, tmp_in_end, tmp_out_begin);
+        thrust::exclusive_scan(
+            policy, tmp_in_dev_ptr, tmp_in_dev_ptr + size, tmp_out_dev_ptr);
       } else {
-        thrust::inclusive_scan(policy, tmp_in_begin, tmp_in_end, tmp_out_begin);
+        thrust::inclusive_scan(
+            policy, tmp_in_dev_ptr, tmp_in_dev_ptr + size, tmp_out_dev_ptr);
       }
     }
 
-    thrust::copy(policy, tmp_out.begin(), tmp_out.end(), out_data);
+    thrust::copy(policy, tmp_out_dev_ptr, tmp_out_dev_ptr + size, out_data);
+
+    {
+      paddle::platform::SkipCUDAGraphCaptureGuard skip_free_guard;
+      tmp_in_alloc.reset();
+      tmp_out_alloc.reset();
+    }
   }
 }
 
@@ -366,8 +383,11 @@ void ScanKernel(const Context& dev_ctx,
 
   // Use thrust for parallel acceleration when the input size is equal to the
   // length of the 'axis' dimension (i.e., it's a 1D scan).
+  // Skip the thrust path during CUDA graph capture because thrust::scan
+  // internally calls cudaStreamSynchronize which is forbidden during capture.
   int64_t size = x.numel();
-  if (std::is_same_v<Op, cub::Sum> && size == out_dims[axis]) {
+  if (std::is_same_v<Op, cub::Sum> && size == out_dims[axis] &&
+      !phi::backends::gpu::CUDAGraph::IsThisThreadCapturing()) {
     ThrustCumsumKernel<Context, T>(
         dev_ctx, in_data, out_data, size, reverse, exclusive);
     return;
@@ -384,9 +404,13 @@ void ScanKernel(const Context& dev_ctx,
   int64_t scan_size = out_dims[axis];
   bool transpose = (axis != out_dims.size() - 1);
 
-  DenseTensor tmp_tensor;
-  tmp_tensor.Resize(out_dims);
-  auto* tmp_data = dev_ctx.template Alloc<T>(&tmp_tensor);
+  // Use AllocationPtr instead of DenseTensor so we can explicitly free
+  // inside a SkipCUDAGraphCaptureGuard, avoiding cudaFree on a capturing
+  // stream.
+  size_t tmp_nbytes = out->numel() * sizeof(T);
+  phi::Allocator::AllocationPtr tmp_alloc =
+      phi::memory_utils::Alloc(dev_ctx.GetPlace(), tmp_nbytes);
+  T* tmp_data = reinterpret_cast<T*>(tmp_alloc->ptr());
 
   auto swap_ptr = [](T*& ptr1, T*& ptr2) {
     T* tmp = ptr2;
@@ -448,6 +472,13 @@ void ScanKernel(const Context& dev_ctx,
   if (transpose) {
     MatrixTranspose<T, 32, 8><<<transpose_grids, blocks, 0, dev_ctx.stream()>>>(
         next_out_data, next_in_data, width, height);
+  }
+
+  // Free tmp_alloc outside of CUDA graph capture to avoid calling cudaFree
+  // while the stream is in capture mode.
+  {
+    paddle::platform::SkipCUDAGraphCaptureGuard skip_free_guard;
+    tmp_alloc.reset();
   }
 }
 

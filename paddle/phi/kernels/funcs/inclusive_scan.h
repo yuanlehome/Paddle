@@ -23,6 +23,7 @@
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/common/type_traits.h"
 #include "paddle/phi/core/enforce.h"
+#include "paddle/phi/core/platform/cuda_graph_with_memory_pool.h"
 #include "paddle/phi/kernels/funcs/for_range.h"
 
 #include "paddle/common/flags.h"
@@ -47,10 +48,13 @@ static void CubInclusiveScan(InputIterator x_iter,
                              size_t n,
                              BinaryOp op,
                              const GPUContext &dev_ctx) {
-  phi::Allocator::AllocationPtr allocation;
   void *temp_storage = nullptr;
   size_t temp_storage_bytes = 0;
-  for (size_t i = 0; i < 2; ++i) {
+  {
+    // The nullptr-query call must not be captured in a CUDA graph since it
+    // only returns a required buffer size without enqueuing any GPU work.
+    // Use SkipCUDAGraphCaptureGuard to temporarily pause capture.
+    paddle::platform::SkipCUDAGraphCaptureGuard skip_guard;
     PADDLE_ENFORCE_GPU_SUCCESS(
         cub::DeviceScan::InclusiveScan(temp_storage,
                                        temp_storage_bytes,
@@ -59,11 +63,25 @@ static void CubInclusiveScan(InputIterator x_iter,
                                        op,
                                        static_cast<int>(n),
                                        dev_ctx.stream()));
-    if (i == 0 && temp_storage_bytes > 0) {
-      allocation =
-          phi::memory_utils::Alloc(dev_ctx.GetPlace(), temp_storage_bytes);
-      temp_storage = allocation->ptr();
-    }
+  }
+  phi::Allocator::AllocationPtr allocation;
+  if (temp_storage_bytes > 0) {
+    allocation =
+        phi::memory_utils::Alloc(dev_ctx.GetPlace(), temp_storage_bytes);
+    temp_storage = allocation->ptr();
+  }
+  PADDLE_ENFORCE_GPU_SUCCESS(cub::DeviceScan::InclusiveScan(temp_storage,
+                                                            temp_storage_bytes,
+                                                            x_iter,
+                                                            y_iter,
+                                                            op,
+                                                            static_cast<int>(n),
+                                                            dev_ctx.stream()));
+  // Free temp buffer while capture is paused so cudaFree is not called on a
+  // capturing stream.
+  if (allocation != nullptr) {
+    paddle::platform::SkipCUDAGraphCaptureGuard skip_free_guard;
+    allocation.reset();
   }
 }
 
